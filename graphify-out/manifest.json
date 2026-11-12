@@ -34,5 +34,11 @@
     "seen": 1794488083.8510048,
     "ast_hash": "7b04a2bb91955467c65983dff5b40943",
     "semantic_hash": "7b04a2bb91955467c65983dff5b40943"
+  },
+  "README.md": {
+    "mtime": 1794488126.3015666,
+    "seen": 1794488513.3614986,
+    "ast_hash": "34524ea723cdce333fe05e711ebc202d",
+    "semantic_hash": "34524ea723cdce333fe05e711ebc202d"
   }
 }
