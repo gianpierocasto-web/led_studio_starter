@@ -10,6 +10,9 @@ graphify-out/obsidian/
 !graphify-out/GRAPH_REPORT.md
 !graphify-out/manifest.json
 
+*.blend1
+graphify-out/20*/
+
 # segreti — mai versionare
 .env
 .env.*
