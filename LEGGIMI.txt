@@ -1,0 +1,45 @@
+LED STUDIO — PARTENZA RAPIDA
+
+Blender 4.3.2: file generato e controllato. Usare Blender 4.3 o successivo.
+Tre scene, selezionabili dal menu Scene in alto: 8 mm, 10 mm, RGB 12 mm.
+Le denominazioni sono preset geometrici dimostrativi, non prodotti certificati.
+
+1. Seleziona LED_... nell'Outliner della scena corrente.
+2. Modificatori > Configurazione prodotto: cambia quote, materiali e numero raggi.
+3. F12 per il render; tastierino 0 per la camera.
+4. Workspace Geometry Nodes: scegli il modificatore Configurazione prodotto.
+
+Gruppi disponibili e marcati come asset:
+00 Prodotto completo; 01 Percorso spirale e uscita;
+02 PCB e componenti su curva; 03 Bobina parametrica.
+
+IMPORTAZIONE: File > Append > LED_Studio.blend > Collection > Prodotto | ...
+Importa la sola collezione prodotto: nodi e materiali collegati sono inclusi.
+Per usare il generatore da zero su una mesh, aggiungi un modificatore Geometry
+Nodes e scegli LED | 00 Prodotto completo, poi assegna i materiali nei socket.
+
+QUOTE: valori numerici in metri: 0.008 = 8 mm. La larghezza si sviluppa
+verticalmente fra le flange. Passo radiale = distanza fra spire, non larghezza.
+Mantieni Raggio mozzo < Raggio avvolgimento < Raggio bobina - 0.005.
+Il generatore arrotonda i giri interni per ottenere un'uscita ripetibile.
+Gioco flange aumenta l'altezza della bobina senza allargare il PCB.
+Giri uscita / Apertura uscita controllano il tratto libero.
+Un avvolgimento troppo fitto può intersecare i componenti: controlla il passo.
+Non interpreta una lunghezza commerciale esatta: e' un avvolgimento illustrativo.
+
+Il preset RGB usa un package quadrato con finestra scura: non e' un circuito
+elettronico RGB completo. Componenti e contatti sono rappresentativi.
+Nessun testo, logo, liner adesivo, cavo o guaina impermeabile incluso.
+Il dettaglio frontale inferiore della foto non viene composto automaticamente.
+Il gruppo 02 puo' essere riutilizzato su una curva diritta per produrlo.
+
+PERSONALIZZAZIONE: il gruppo 02 contiene i blocchi package, fosforo,
+resistenza e contatti; sostituiscili con i tuoi componenti. I materiali sono
+gia' separati. La bobina di base ha flange ad anello e raggi modificabili.
+I gruppi condivisi aggiornano tutte le scene; i valori dei modificatori sono
+indipendenti. Duplica un gruppo prima di cambiarne la struttura per un prodotto.
+
+SCRIPT: eseguire led_starter.py dal Text Editor crea nuove scene, senza
+cancellare quelle esistenti. Ripetere lo script crea altre copie, non aggiorna.
+La scena originale rimane disponibile. Lo script non salva automaticamente
+il progetto aperto; salva una copia manualmente dopo averlo eseguito.

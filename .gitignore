@@ -1,0 +1,18 @@
+# graphify - cache e artefatti locali
+graphify-out/.graphify_*
+graphify-out/.graphify_chunk_*
+graphify-out/cost.json
+graphify-out/graph.html
+graphify-out/obsidian/
+
+# graphify — memoria strutturale versionata
+!graphify-out/graph.json
+!graphify-out/GRAPH_REPORT.md
+!graphify-out/manifest.json
+
+# segreti — mai versionare
+.env
+.env.*
+*.pem
+credentials.json
+**/secrets.json
