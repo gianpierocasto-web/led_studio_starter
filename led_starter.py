@@ -168,35 +168,114 @@ def build_path():
 
 
 def build_strip():
-    """Repeat the PCB object along a curve. Instances stay instances."""
+    """Sweep the PCB base along the curve; repeat the rigid components at the pitch."""
     q = Graph('LED | 02 PCB e componenti su curva')
     q.sock('Curva', 'NodeSocketGeometry')
     q.sock('Modulo PCB', 'NodeSocketObject')
     q.sock('Passo', default=.016, lo=.0005, hi=.1,
            description='Lunghezza X del modulo, in metri.')
+    q.sock('Min X', default=-.008, lo=-.1, hi=.1,
+           description='Inizio X del modulo, in metri.')
     p = q.i.outputs
     info = q.node('GeometryNodeObjectInfo', 'Modulo PCB')
     info.transform_space = 'ORIGINAL'
     info.inputs['As Instance'].default_value = False
     q.link(p['Modulo PCB'], info.inputs['Object'])
+
+    # Only the base reaches the two X ends of the module: its section is read there.
+    pos = q.node('GeometryNodeInputPosition')
+    pos_xyz = q.node('ShaderNodeSeparateXYZ')
+    q.link(pos.outputs['Position'], pos_xyz.inputs['Vector'])
+    at_start = q.math('LESS_THAN', pos_xyz.outputs['X'], q.math('ADD', p['Min X'], .00001))
+    at_end = q.math('GREATER_THAN', pos_xyz.outputs['X'],
+                    q.math('SUBTRACT', q.math('ADD', p['Min X'], p['Passo']), .00001))
+    ends = q.node('GeometryNodeAttributeStatistic', 'Sezione alle estremità X')
+    ends.data_type = 'FLOAT_VECTOR'
+    ends.domain = 'POINT'
+    q.link(info.outputs['Geometry'], ends.inputs['Geometry'])
+    q.link(q.math('MAXIMUM', at_start, at_end), ends.inputs['Selection'])
+    q.link(pos.outputs['Position'], ends.inputs['Attribute'])
+    b_lo = q.node('ShaderNodeSeparateXYZ')
+    b_hi = q.node('ShaderNodeSeparateXYZ')
+    q.link(ends.outputs['Min'], b_lo.inputs['Vector'])
+    q.link(ends.outputs['Max'], b_hi.inputs['Vector'])
+
+    # Components: every face that leaves the base section, fused to the base or not.
+    outside = [q.math('LESS_THAN', pos_xyz.outputs[axis], q.math('SUBTRACT', b_lo.outputs[axis], .00001))
+               for axis in 'YZ']
+    outside += [q.math('GREATER_THAN', pos_xyz.outputs[axis], q.math('ADD', b_hi.outputs[axis], .00001))
+                for axis in 'YZ']
+    is_component = q.math('MAXIMUM', q.math('MAXIMUM', outside[0], outside[1]),
+                          q.math('MAXIMUM', outside[2], outside[3]), 'Fuori dalla base')
+    split = q.node('GeometryNodeSeparateGeometry', 'Componenti / base')
+    split.domain = 'FACE'
+    q.link(info.outputs['Geometry'], split.inputs['Geometry'])
+    q.link(is_component, split.inputs['Selection'])
+    thickness = q.math('SUBTRACT', b_hi.outputs['Y'], b_lo.outputs['Y'], 'Spessore')
+    width = q.math('SUBTRACT', b_hi.outputs['Z'], b_lo.outputs['Z'], 'Larghezza')
+    center_y = q.math('MULTIPLY', q.math('ADD', b_hi.outputs['Y'], b_lo.outputs['Y']), .5)
+    center_z = q.math('MULTIPLY', q.math('ADD', b_hi.outputs['Z'], b_lo.outputs['Z']), .5)
+    profile = q.node('GeometryNodeCurvePrimitiveQuadrilateral', 'Sezione base')
+    profile.mode = 'RECTANGLE'
+    q.link(thickness, profile.inputs['Width'])
+    q.link(width, profile.inputs['Height'])
+    # Profile X follows the radial curve normal, i.e. the module's -Y.
+    shifted = q.transform(profile.outputs['Curve'], q.vec(q.math('MULTIPLY', center_y, -1), center_z, 0))
+    sweep = q.node('GeometryNodeCurveToMesh', 'Base continua')
+    q.link(p['Curva'], sweep.inputs['Curve'])
+    q.link(shifted, sweep.inputs['Profile Curve'])
+    sweep.inputs['Fill Caps'].default_value = True
+    mats = q.node('GeometryNodeGeometryMaterials')
+    mats.inputs['Component Type'].default_value = 'Mesh'
+    q.link(split.outputs['Inverted'], mats.inputs['Geometry'])
+    item = q.node('GeometryNodeListGetItem')
+    item.socket_type = 'MATERIAL'
+    q.link(mats.outputs['Materials'], item.inputs['List'])
+    item.inputs['Index'].default_value = 0
+    has_base = q.node('GeometryNodeSwitch', 'Solo con un PCB scelto')
+    has_base.input_type = 'GEOMETRY'
+    q.link(q.math('GREATER_THAN', q.math('MULTIPLY', thickness, width), 0), has_base.inputs['Switch'])
+    q.link(q.material(sweep.outputs['Mesh'], item.outputs['Value']), has_base.inputs['True'])
+    base = has_base.outputs['Output']
+
     safe = q.math('MAXIMUM', p['Passo'], .001)
-    points = q.node('GeometryNodeCurveToPoints')
-    points.mode = 'LENGTH'
-    if not points.inputs['Length'].enabled:
-        raise RuntimeError('Curve to Points: socket Length non disponibile')
-    q.link(p['Curva'], points.inputs['Curve'])
-    q.link(safe, points.inputs['Length'])
-    align = q.node('FunctionNodeAlignRotationToVector', 'X tangente / Z verticale')
-    align.axis = 'X'
-    align.pivot_axis = 'Z'
-    align.inputs['Factor'].default_value = 1.0
-    q.link(points.outputs['Tangent'], align.inputs['Vector'])
-    inst = q.node('GeometryNodeInstanceOnPoints', 'Modulo ripetuto')
-    q.link(points.outputs['Points'], inst.inputs['Points'])
-    q.link(info.outputs['Geometry'], inst.inputs['Instance'])
-    q.link(align.outputs['Rotation'], inst.inputs['Rotation'])
-    q.link(q.math('GREATER_THAN', p['Passo'], .0001), inst.inputs['Selection'])
-    return q.finish(inst.outputs['Instances'])
+    length = q.node('GeometryNodeCurveLength')
+    q.link(p['Curva'], length.inputs['Curve'])
+    count = q.node('FunctionNodeFloatToInt')
+    count.rounding_mode = 'FLOOR'
+    q.link(q.math('DIVIDE', length.outputs['Length'], safe), count.inputs['Float'])
+    line = q.node('GeometryNodeMeshLine', 'Un punto per pattern')
+    line.mode = 'OFFSET'
+    q.link(count.outputs['Integer'], line.inputs['Count'])
+    q.link(q.vec(q.math('MULTIPLY', p['Min X'], -1), 0, 0), line.inputs['Start Location'])
+    q.link(q.vec(safe, 0, 0), line.inputs['Offset'])
+    along = q.node('ShaderNodeSeparateXYZ')
+    q.link(q.node('GeometryNodeInputPosition').outputs['Position'], along.inputs['Vector'])
+    sample = q.node('GeometryNodeSampleCurve')
+    sample.mode = 'LENGTH'
+    sample.use_all_curves = True
+    q.link(p['Curva'], sample.inputs['Curves'])
+    q.link(along.outputs['X'], sample.inputs['Length'])
+    sample_xyz = q.node('ShaderNodeSeparateXYZ')
+    q.link(sample.outputs['Position'], sample_xyz.inputs['Vector'])
+    inward = q.node('ShaderNodeVectorMath', 'Verso il mozzo')
+    inward.operation = 'NORMALIZE'
+    q.link(q.vec(q.math('MULTIPLY', sample_xyz.outputs['X'], -1),
+                 q.math('MULTIPLY', sample_xyz.outputs['Y'], -1), 0), inward.inputs[0])
+    axes = q.node('FunctionNodeAxesToRotation', 'X tangente / -Y esterno')
+    axes.primary_axis = 'X'
+    axes.secondary_axis = 'Y'
+    q.link(sample.outputs['Tangent'], axes.inputs['Primary Axis'])
+    q.link(inward.outputs['Vector'], axes.inputs['Secondary Axis'])
+    # Rotate on the straight line, then move: both read the unmoved X as arc length.
+    inst = q.node('GeometryNodeInstanceOnPoints', 'Componenti rigidi')
+    q.link(line.outputs['Mesh'], inst.inputs['Points'])
+    q.link(split.outputs['Selection'], inst.inputs['Instance'])
+    q.link(axes.outputs['Rotation'], inst.inputs['Rotation'])
+    placed = q.node('GeometryNodeSetPosition', 'Componenti sul percorso')
+    q.link(inst.outputs['Instances'], placed.inputs['Geometry'])
+    q.link(sample.outputs['Position'], placed.inputs['Position'])
+    return q.finish(q.join(base, placed.outputs['Geometry']))
 
 
 def build_reel():
@@ -311,10 +390,31 @@ def build_master(path, strip, reel):
                      'Quota livello')
     placed = q.transform(layer_sw.outputs['Output'], q.vec(0, 0, z_layer))
     q.link(q.join(enter.outputs['Geometry'], placed), leave.inputs['Geometry'])
+    # Weld the layers and risers into one spline so the base sweep has no joint.
+    edges = q.node('GeometryNodeCurveToMesh', 'Percorso in spigoli')
+    q.link(leave.outputs['Geometry'], edges.inputs['Curve'])
+    weld = q.node('GeometryNodeMergeByDistance', 'Salda livelli e raccordi')
+    q.link(edges.outputs['Mesh'], weld.inputs['Geometry'])
+    weld.inputs['Mode'].default_value = 'All'
+    weld.inputs['Distance'].default_value = .00001
+    single = q.node('GeometryNodeMeshToCurve', 'Percorso unico')
+    single.mode = 'EDGES'
+    q.link(weld.outputs['Geometry'], single.inputs['Mesh'])
+    pos = q.node('GeometryNodeInputPosition')
+    radial = q.node('ShaderNodeSeparateXYZ')
+    q.link(pos.outputs['Position'], radial.inputs['Vector'])
+    outward = q.node('ShaderNodeVectorMath', 'Esterno')
+    outward.operation = 'NORMALIZE'
+    q.link(q.vec(radial.outputs['X'], radial.outputs['Y'], 0), outward.inputs[0])
+    normal = q.node('GeometryNodeSetCurveNormal', 'Normale radiale')
+    q.link(single.outputs['Curve'], normal.inputs['Curve'])
+    normal.inputs['Mode'].default_value = 'Free'
+    q.link(outward.outputs['Vector'], normal.inputs['Normal'])
     strip_node = q.call(strip, '02 Striscia')
-    q.link(leave.outputs['Geometry'], strip_node.inputs['Curva'])
+    q.link(normal.outputs['Curve'], strip_node.inputs['Curva'])
     q.link(p['Modulo PCB'], strip_node.inputs['Modulo PCB'])
     q.link(passo, strip_node.inputs['Passo'])
+    q.link(lo.outputs['X'], strip_node.inputs['Min X'])
     reel_node = q.call(reel, '03 Bobina')
     for name in ('Flangia up', 'Flangia down', 'Raggio mozzo', 'Altezza bobina'):
         q.link(p[name], reel_node.inputs[name])
@@ -602,6 +702,9 @@ Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
 3. In pcb metti un .blend per codice. L'oggetto mesh ha il nome del file
    senza estensione, per esempio FN01234. Origine al centro del passo.
    X è il passo lungo il nastro, Z è la larghezza, il lato LED guarda verso -Y.
+   La base è un parallelepipedo staccato dai componenti, lungo tutto il passo:
+   diventa un nastro unico senza cuciture, con la sua sezione e il suo materiale.
+   Gli altri pezzi restano rigidi e si ripetono a ogni passo lungo la curva.
 4. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
    oppure esegui una volta il testo LED Studio Libreria.
    Nel modificatore Configurazione prodotto scegli Bobina e poi PCB.
@@ -663,6 +766,27 @@ def make_box(name, size, center):
     return bpy.data.objects.new(name, mesh)
 
 
+def make_pcb_piece(name, material):
+    """Base spanning the full pitch, plus two detached components on the -Y side."""
+    parts = [((.004, .0003, .008), (0, 0, 0)),
+             ((.001, .0006, .002), (-.001, -.00045, 0)),
+             ((.001, .0006, .002), (.001, -.00045, .002))]
+    verts, faces = [], []
+    for size, (cx, cy, cz) in parts:
+        hx, hy, hz = (axis / 2 for axis in size)
+        start = len(verts)
+        for x, y, z in [(-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz),
+                        (-hx, -hy, hz), (hx, -hy, hz), (hx, hy, hz), (-hx, hy, hz)]:
+            verts.append((cx + x, cy + y, cz + z))
+        for face in [(0, 1, 2, 3), (4, 7, 6, 5), (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 4, 0)]:
+            faces.append(tuple(start + i for i in face))
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(verts, [], faces)
+    mesh.materials.append(material)
+    mesh.update()
+    return bpy.data.objects.new(name, mesh)
+
+
 def mesh_report(obj):
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
@@ -670,25 +794,49 @@ def mesh_report(obj):
     mesh = ev.to_mesh()
     zs = [v.co.z for v in mesh.vertices]
     mats = [slot.name for slot in mesh.materials if slot]
+    # Base vertices only: away from the hub and below the flange faces at +-0.005.
+    strip_z = [v.co.z for v in mesh.vertices
+               if .03 < Vector((v.co.x, v.co.y)).length < .095 and abs(v.co.z) < .0049]
+    parent = list(range(len(mesh.vertices)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for edge in mesh.edges:
+        a, b = root(edge.vertices[0]), root(edge.vertices[1])
+        if a != b:
+            parent[a] = b
+    islands = len({root(i) for i in range(len(parent))})
     ev.to_mesh_clear()
-    return zs, mats
+    return zs, mats, islands, strip_z
 
 
 def instance_points(obj):
+    """Instance origins in object space, and whether each one's -Y faces away from the axis."""
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
     pts = []
+    outward = []
     seen = []
+    to_local = obj.matrix_world.inverted()
     for inst in deps.object_instances:
         if not inst.is_instance:
             continue
         parent = inst.parent
         original = getattr(parent, 'original', None) if parent else None
         if original == obj or parent == obj:
-            pts.append(obj.matrix_world.inverted() @ inst.matrix_world.translation)
+            matrix = to_local @ inst.matrix_world
+            origin = matrix.translation
+            pts.append(origin)
+            led_side = -matrix.col[1].xyz
+            radial = Vector((origin.x, origin.y, 0))
+            outward.append(radial.length > 1e-6 and led_side.normalized().dot(radial.normalized()) > .7)
         elif len(seen) < 6:
             seen.append(getattr(original, 'name', None))
-    return pts, seen
+    return pts, outward, seen
 
 
 def exercise_library(scene, obj, values):
@@ -700,14 +848,15 @@ def exercise_library(scene, obj, values):
     os.makedirs(os.path.join(temp, 'bobine'))
     os.makedirs(os.path.join(temp, 'pcb'))
     mat = make_material('test mozzo', (.2, .45, .8), 0, .4)
+    pcb_mat = make_material('test base pcb', (.9, .9, .85), 0, .4)
     up = make_box('up', (.2, .2, .002), (0, 0, .005))
     down = make_box('down', (.2, .2, .002), (0, 0, -.005))
-    pcb = make_box('FN01234', (.004, .001, .008), (0, 0, 0))
+    pcb = make_pcb_piece('FN01234', pcb_mat)
     up.data.materials.append(mat)
     bobina_path = os.path.join(temp, 'bobine', 'bobina bianca.blend')
     pcb_path = os.path.join(temp, 'pcb', 'FN01234.blend')
     bpy.data.libraries.write(bobina_path, {up, up.data, down, down.data, mat}, fake_user=True)
-    bpy.data.libraries.write(pcb_path, {pcb, pcb.data}, fake_user=True)
+    bpy.data.libraries.write(pcb_path, {pcb, pcb.data, pcb_mat}, fake_user=True)
     for piece in (up, down, pcb):
         data = piece.data
         bpy.data.objects.remove(piece, do_unlink=True)
@@ -723,27 +872,38 @@ def exercise_library(scene, obj, values):
             raise RuntimeError(obj.led_studio.status)
         mod = obj.modifiers['Configurazione prodotto']
         set_input(mod, 'Altezza bobina', .020)
-        zs, mats = mesh_report(obj)
-        pts, seen = instance_points(obj)
-        print('LED_CHECK library verts', len(zs), 'z', (min(zs), max(zs)), 'instances', len(pts), 'mats', mats, 'other', seen)
+        zs, mats, islands, _strip_z = mesh_report(obj)
+        pts, outward, seen = instance_points(obj)
+        print('LED_CHECK library verts', len(zs), 'z', (min(zs), max(zs)), 'islands', islands,
+              'instances', len(pts), 'outward', sum(outward), 'mats', mats, 'other', seen)
         if not zs or min(zs) > -.011 or max(zs) < .011:
             raise RuntimeError('Le flange non si sono aperte alla luce richiesta')
         if not any('test mozzo' in name for name in mats):
             raise RuntimeError('Il cilindro non ha preso il materiale di up: ' + ', '.join(mats))
+        if not any('test base pcb' in name for name in mats):
+            raise RuntimeError('La base trascinata non ha il materiale della base: ' + ', '.join(mats))
+        # up, down, hub cylinder and one continuous base.
+        if islands != 4:
+            raise RuntimeError('La base non è un unico pezzo: %d isole invece di 4' % islands)
         low = [p for p in pts if -.009 < p.z < -.002]
         high = [p for p in pts if .002 < p.z < .009]
-        riser = [p for p in pts if abs(p.z) < .0015 and abs(p.y) < .01 and p.x > .07]
         if not low or not high:
-            raise RuntimeError('Mancano i due livelli della striscia')
-        if not riser:
-            raise RuntimeError('Manca il raccordo verticale fra i livelli')
+            raise RuntimeError('Mancano i componenti su uno dei due livelli')
+        if not all(outward):
+            raise RuntimeError('%d componenti guardano verso il mozzo' % (len(outward) - sum(outward)))
         two_levels = len(pts)
         set_input(mod, 'Altezza bobina', .010)
-        pts, _seen = instance_points(obj)
-        zs = [p.z for p in pts]
-        print('LED_CHECK un livello', len(pts), 'z', (min(zs), max(zs)) if zs else None)
+        zs, _mats, islands, strip_z = mesh_report(obj)
+        pts, outward, _seen = instance_points(obj)
+        print('LED_CHECK un livello', len(pts), 'islands', islands,
+              'base z', (min(strip_z), max(strip_z)) if strip_z else None)
         if len(pts) > two_levels * 0.7:
             raise RuntimeError('Abbassare la bobina non ha tolto il secondo livello')
+        if islands != 4 or not all(outward):
+            raise RuntimeError('Un livello: base spezzata o componenti girati')
+        # The 8 mm base width must stand vertically, not the 0.3 mm thickness.
+        if not strip_z or max(strip_z) - min(strip_z) < .007:
+            raise RuntimeError('La larghezza della base non è verticale')
     finally:
         if obj.led_studio.bobina != 'NONE':
             obj.led_studio.bobina = 'NONE'
@@ -758,9 +918,10 @@ def exercise_library(scene, obj, values):
                     collection.remove(block)
         for lib in list(bpy.data.libraries):
             bpy.data.libraries.remove(lib)
-        local = bpy.data.materials.get(PREFIX + ' | test mozzo')
-        if local and local.users == 0:
-            bpy.data.materials.remove(local)
+        for name in ('test mozzo', 'test base pcb'):
+            local = bpy.data.materials.get(PREFIX + ' | ' + name)
+            if local and local.users == 0:
+                bpy.data.materials.remove(local)
         col = bpy.data.collections.get('LED Studio | Libreria')
         if col and not col.objects:
             for scene_ in bpy.data.scenes:
@@ -788,7 +949,7 @@ def main():
         raise RuntimeError('Blender non ha una finestra: serve il contesto per valutare il modificatore')
     for scene, obj in built:
         window.scene = scene
-        zs, _mats = mesh_report(obj)
+        zs, _mats, _islands, _strip_z = mesh_report(obj)
         if not zs:
             raise RuntimeError('Geometria vuota: ' + scene.name)
         print('LED_CHECK', scene.name, 'vertices', len(zs), 'z', (min(zs), max(zs)))

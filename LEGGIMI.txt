@@ -10,6 +10,9 @@ Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
 3. In pcb metti un .blend per codice. L'oggetto mesh ha il nome del file
    senza estensione, per esempio FN01234. Origine al centro del passo.
    X è il passo lungo il nastro, Z è la larghezza, il lato LED guarda verso -Y.
+   La base è un parallelepipedo staccato dai componenti, lungo tutto il passo:
+   diventa un nastro unico senza cuciture, con la sua sezione e il suo materiale.
+   Gli altri pezzi restano rigidi e si ripetono a ogni passo lungo la curva.
 4. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
    oppure esegui una volta il testo LED Studio Libreria.
    Nel modificatore Configurazione prodotto scegli Bobina e poi PCB.
