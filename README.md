@@ -33,4 +33,4 @@ _Vedi struttura cartelle sopra._
 
 - 135 nodes · 284 edges · 7 communities
 - Report: LED_Studio_Starter (2026-11-12)
-- Git commit: `c24bc60`
+- Git commit: `402e0c6`

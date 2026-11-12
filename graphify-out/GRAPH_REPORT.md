@@ -1,7 +1,7 @@
 # Graph Report - LED_Studio_Starter  (2026-11-12)
 
 ## Corpus Check
-- 1 files · ~4,904 words
+- 1 files · ~4,899 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -26,20 +26,20 @@
 5. `SCAMPER` - 12 edges
 6. `Spirale planare di avvolgimento` - 10 edges
 7. `build_path()` - 9 edges
-8. `Sistema quote in metri` - 9 edges
-9. `Modello di bobina per famiglia` - 9 edges
+8. `Modello di bobina per famiglia` - 9 edges
+9. `Sistema quote in metri` - 9 edges
 10. `LedStudioStarter` - 9 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Append Prodotto | 02_Caldo_10mm` --conceptually_related_to--> `02 PCB e componenti su curva`  [AMBIGUOUS]
   VERIFICA.txt → LEGGIMI.txt
+- `Sistema quote in metri` --semantically_similar_to--> `Disambiguazione dell'altezza`  [INFERRED] [semantically similar]
+  LEGGIMI.txt → brainstorming-report.md
 - `Arrotondamento dei giri interni` --semantically_similar_to--> `Campionamento del passo commerciale`  [INFERRED] [semantically similar]
   LEGGIMI.txt → brainstorming-report.md
 - `Gruppi condivisi fra le scene` --semantically_similar_to--> `Preset PCB condiviso fra le viste`  [INFERRED] [semantically similar]
   LEGGIMI.txt → brainstorming-report.md
 - `Sistema quote in metri` --semantically_similar_to--> `Modalità di avvolgimento`  [INFERRED] [semantically similar]
-  LEGGIMI.txt → brainstorming-report.md
-- `Sistema quote in metri` --semantically_similar_to--> `Disambiguazione dell'altezza`  [INFERRED] [semantically similar]
   LEGGIMI.txt → brainstorming-report.md
 
 ## Import Cycles
@@ -50,7 +50,6 @@
 - **Componenti della soluzione raccomandata** — brainstorming_report_idea_scena_master, brainstorming_report_idea_due_viste, brainstorming_report_idea_libreria_bobine, brainstorming_report_idea_modulo_pcb, brainstorming_report_idea_generazione_curve, brainstorming_report_strada_geometry_nodes [EXTRACTED 1.00]
 - **Gruppi del generatore LED** — leggimi_gruppo_00_prodotto_completo, leggimi_gruppo_01_percorso_spirale, leggimi_gruppo_02_pcb, leggimi_gruppo_03_bobina [EXTRACTED 1.00]
 - **LED Strip Wound on Supply Reel** — preview_supply_reel, preview_reel_frame, preview_led_strip, preview_strip_tail, preview_smd_leds [EXTRACTED 1.00]
-- **Sviluppo e knowledge graph** — readme_knowledge_graph, readme_graph_json, readme_graph_report, readme_graphify, readme_generate_readme, readme_ensure_bootstrap [EXTRACTED 1.00]
 
 ## Communities (7 total, 0 thin omitted)
 
@@ -72,7 +71,7 @@ Nodes (11): Append collezione Prodotto, Modificatore Configurazione prodotto, 00
 
 ### Community 4 - "Graph Bootstrap Docs"
 Cohesion: 0.29
-Nodes (11): ensure-bootstrap.ps1, generate-readme.ps1, Git commit 351929c, graph.json, GRAPH_REPORT.md, graphify, Knowledge Graph, LedStudioStarter (+3 more)
+Nodes (11): ensure-bootstrap.ps1, generate-readme.ps1, Git commit 402e0c6, graph.json, GRAPH_REPORT.md, graphify, Knowledge Graph, LedStudioStarter (+3 more)
 
 ### Community 5 - "Reel Dimensions"
 Cohesion: 0.31
@@ -89,11 +88,11 @@ Nodes (7): Dark SMD Marks on Strip, Coiled White LED Strip, LED Strip Reel Produ
   LEGGIMI.txt · relation: conceptually_related_to
 - `Dark SMD Marks on Strip` → `SMD LED Emitters`  [AMBIGUOUS]
   preview.png · relation: conceptually_related_to
-- `Struttura cartelle` → `Script JSX`  [AMBIGUOUS]
+- `Script JSX` → `Struttura cartelle`  [AMBIGUOUS]
   README.md · relation: conceptually_related_to
 
 ## Knowledge Gaps
-- **4 isolated node(s):** `BMAD Quick Flow`, `Render Cycles del preset 10 mm`, `Flanged Six-Spoke Plastic Reel`, `Git commit 351929c`
+- **4 isolated node(s):** `BMAD Quick Flow`, `Render Cycles del preset 10 mm`, `Flanged Six-Spoke Plastic Reel`, `Git commit 402e0c6`
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 20 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 
 ## Suggested Questions
