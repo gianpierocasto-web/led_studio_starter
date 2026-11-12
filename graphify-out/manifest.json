@@ -6,15 +6,15 @@
     "semantic_hash": "c3c0016b26595ced7aad5132433b7e61"
   },
   "led_starter.py": {
-    "mtime": 1794496459.1040394,
-    "seen": 1794496609.5763247,
-    "ast_hash": "d0092c861797f0357327c8ce86d2ec38",
+    "mtime": 1794499657.2208767,
+    "seen": 1794499689.4397652,
+    "ast_hash": "373659baa2728f2d651d267a8b689561",
     "semantic_hash": ""
   },
   "LEGGIMI.txt": {
-    "mtime": 1794496348.546764,
-    "seen": 1794496609.5763247,
-    "ast_hash": "e89f0f1e188e1ba3dcf5017bda4a6d43",
+    "mtime": 1794499656.1354196,
+    "seen": 1794499689.4397652,
+    "ast_hash": "80d0cc85218b3d0853199fe54b66d2f1",
     "semantic_hash": ""
   },
   "VERIFICA.txt": {
@@ -36,9 +36,9 @@
     "semantic_hash": "7b04a2bb91955467c65983dff5b40943"
   },
   "README.md": {
-    "mtime": 1794494731.8725233,
-    "seen": 1794496609.5763247,
-    "ast_hash": "b9c45daffc9b08ca74f0675dde8789c3",
+    "mtime": 1794496633.2428927,
+    "seen": 1794499689.4397652,
+    "ast_hash": "1529ac8f7b0c9ada6d58fe1e2559ebd5",
     "semantic_hash": ""
   }
 }

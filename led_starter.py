@@ -59,6 +59,14 @@ class Graph:
         self.link(b, n.inputs[1])
         return n.outputs[0]
 
+    def vmath(self, operation, a, b=None, label=''):
+        n = self.node('ShaderNodeVectorMath', label or operation)
+        n.operation = operation
+        self.link(a, n.inputs[0])
+        if b is not None:
+            self.link(b, n.inputs['Scale'] if operation == 'SCALE' else n.inputs[1])
+        return n.outputs['Value'] if operation == 'DOT_PRODUCT' else n.outputs['Vector']
+
     def compare(self, a, b, eps=0.1, label=''):
         n = self.node('ShaderNodeMath', label or 'COMPARE')
         n.operation = 'COMPARE'
@@ -168,7 +176,7 @@ def build_path():
 
 
 def build_strip():
-    """Sweep the PCB base along the curve; repeat the rigid components at the pitch."""
+    """Repeat the modeled module along the curve, one vertex at a time."""
     q = Graph('LED | 02 PCB e componenti su curva')
     q.sock('Curva', 'NodeSocketGeometry')
     q.sock('Modulo PCB', 'NodeSocketObject')
@@ -181,101 +189,141 @@ def build_strip():
     info.transform_space = 'ORIGINAL'
     info.inputs['As Instance'].default_value = False
     q.link(p['Modulo PCB'], info.inputs['Object'])
-
-    # Only the base reaches the two X ends of the module: its section is read there.
     pos = q.node('GeometryNodeInputPosition')
-    pos_xyz = q.node('ShaderNodeSeparateXYZ')
-    q.link(pos.outputs['Position'], pos_xyz.inputs['Vector'])
-    at_start = q.math('LESS_THAN', pos_xyz.outputs['X'], q.math('ADD', p['Min X'], .00001))
-    at_end = q.math('GREATER_THAN', pos_xyz.outputs['X'],
+
+    cap = q.node('GeometryNodeCaptureAttribute', 'Posizione nel modulo')
+    cap.domain = 'POINT'
+    cap.capture_items.new('VECTOR', 'Origine')
+    q.link(info.outputs['Geometry'], cap.inputs['Geometry'])
+    q.link(pos.outputs['Position'], cap.inputs['Origine'])
+    orig = q.node('ShaderNodeSeparateXYZ')
+    q.link(cap.outputs['Origine'], orig.inputs['Vector'])
+
+    # The board section is what both X ends have in common. A part that touches
+    # only one end, such as a LED cut by the pattern boundary, stays out of it.
+    def section(selection, label):
+        stat = q.node('GeometryNodeAttributeStatistic', label)
+        stat.data_type = 'FLOAT_VECTOR'
+        stat.domain = 'POINT'
+        q.link(info.outputs['Geometry'], stat.inputs['Geometry'])
+        q.link(selection, stat.inputs['Selection'])
+        q.link(pos.outputs['Position'], stat.inputs['Attribute'])
+        lo = q.node('ShaderNodeSeparateXYZ')
+        hi = q.node('ShaderNodeSeparateXYZ')
+        q.link(stat.outputs['Min'], lo.inputs['Vector'])
+        q.link(stat.outputs['Max'], hi.inputs['Vector'])
+        return lo.outputs, hi.outputs
+
+    mod_x = q.node('ShaderNodeSeparateXYZ')
+    q.link(pos.outputs['Position'], mod_x.inputs['Vector'])
+    at_start = q.math('LESS_THAN', mod_x.outputs['X'], q.math('ADD', p['Min X'], .00001))
+    at_end = q.math('GREATER_THAN', mod_x.outputs['X'],
                     q.math('SUBTRACT', q.math('ADD', p['Min X'], p['Passo']), .00001))
-    ends = q.node('GeometryNodeAttributeStatistic', 'Sezione alle estremità X')
-    ends.data_type = 'FLOAT_VECTOR'
-    ends.domain = 'POINT'
-    q.link(info.outputs['Geometry'], ends.inputs['Geometry'])
-    q.link(q.math('MAXIMUM', at_start, at_end), ends.inputs['Selection'])
-    q.link(pos.outputs['Position'], ends.inputs['Attribute'])
-    b_lo = q.node('ShaderNodeSeparateXYZ')
-    b_hi = q.node('ShaderNodeSeparateXYZ')
-    q.link(ends.outputs['Min'], b_lo.inputs['Vector'])
-    q.link(ends.outputs['Max'], b_hi.inputs['Vector'])
+    s_lo, s_hi = section(at_start, 'Estremità iniziale')
+    e_lo, e_hi = section(at_end, 'Estremità finale')
+    y_lo = q.math('MAXIMUM', s_lo['Y'], e_lo['Y'])
+    y_hi = q.math('MINIMUM', s_hi['Y'], e_hi['Y'])
+    z_lo = q.math('MAXIMUM', s_lo['Z'], e_lo['Z'])
+    z_hi = q.math('MINIMUM', s_hi['Z'], e_hi['Z'])
+    valid = q.math('MINIMUM', q.math('GREATER_THAN', y_hi, y_lo), q.math('GREATER_THAN', z_hi, z_lo))
+    box = q.node('GeometryNodeBoundBox', 'Ingombro modulo')
+    q.link(info.outputs['Geometry'], box.inputs['Geometry'])
+    box_lo = q.node('ShaderNodeSeparateXYZ')
+    box_hi = q.node('ShaderNodeSeparateXYZ')
+    q.link(box.outputs['Min'], box_lo.inputs['Vector'])
+    q.link(box.outputs['Max'], box_hi.inputs['Vector'])
 
-    # Components: every face that leaves the base section, fused to the base or not.
-    outside = [q.math('LESS_THAN', pos_xyz.outputs[axis], q.math('SUBTRACT', b_lo.outputs[axis], .00001))
-               for axis in 'YZ']
-    outside += [q.math('GREATER_THAN', pos_xyz.outputs[axis], q.math('ADD', b_hi.outputs[axis], .00001))
-                for axis in 'YZ']
-    is_component = q.math('MAXIMUM', q.math('MAXIMUM', outside[0], outside[1]),
-                          q.math('MAXIMUM', outside[2], outside[3]), 'Fuori dalla base')
-    split = q.node('GeometryNodeSeparateGeometry', 'Componenti / base')
-    split.domain = 'FACE'
-    q.link(info.outputs['Geometry'], split.inputs['Geometry'])
-    q.link(is_component, split.inputs['Selection'])
-    thickness = q.math('SUBTRACT', b_hi.outputs['Y'], b_lo.outputs['Y'], 'Spessore')
-    width = q.math('SUBTRACT', b_hi.outputs['Z'], b_lo.outputs['Z'], 'Larghezza')
-    center_y = q.math('MULTIPLY', q.math('ADD', b_hi.outputs['Y'], b_lo.outputs['Y']), .5)
-    center_z = q.math('MULTIPLY', q.math('ADD', b_hi.outputs['Z'], b_lo.outputs['Z']), .5)
-    profile = q.node('GeometryNodeCurvePrimitiveQuadrilateral', 'Sezione base')
-    profile.mode = 'RECTANGLE'
-    q.link(thickness, profile.inputs['Width'])
-    q.link(width, profile.inputs['Height'])
-    # Profile X follows the radial curve normal, i.e. the module's -Y.
-    shifted = q.transform(profile.outputs['Curve'], q.vec(q.math('MULTIPLY', center_y, -1), center_z, 0))
-    sweep = q.node('GeometryNodeCurveToMesh', 'Base continua')
-    q.link(p['Curva'], sweep.inputs['Curve'])
-    q.link(shifted, sweep.inputs['Profile Curve'])
-    sweep.inputs['Fill Caps'].default_value = True
-    mats = q.node('GeometryNodeGeometryMaterials')
-    mats.inputs['Component Type'].default_value = 'Mesh'
-    q.link(split.outputs['Inverted'], mats.inputs['Geometry'])
-    item = q.node('GeometryNodeListGetItem')
-    item.socket_type = 'MATERIAL'
-    q.link(mats.outputs['Materials'], item.inputs['List'])
-    item.inputs['Index'].default_value = 0
-    has_base = q.node('GeometryNodeSwitch', 'Solo con un PCB scelto')
-    has_base.input_type = 'GEOMETRY'
-    q.link(q.math('GREATER_THAN', q.math('MULTIPLY', thickness, width), 0), has_base.inputs['Switch'])
-    q.link(q.material(sweep.outputs['Mesh'], item.outputs['Value']), has_base.inputs['True'])
-    base = has_base.outputs['Output']
+    def center(lo, hi, box_a, box_b, label):
+        sw = q.node('GeometryNodeSwitch', label)
+        sw.input_type = 'FLOAT'
+        q.link(valid, sw.inputs['Switch'])
+        q.link(q.math('MULTIPLY', q.math('ADD', box_a, box_b), .5), sw.inputs['False'])
+        q.link(q.math('MULTIPLY', q.math('ADD', lo, hi), .5), sw.inputs['True'])
+        return sw.outputs['Output']
 
-    safe = q.math('MAXIMUM', p['Passo'], .001)
+    center_y = center(y_lo, y_hi, box_lo.outputs['Y'], box_hi.outputs['Y'], 'Centro Y basetta')
+    center_z = center(z_lo, z_hi, box_lo.outputs['Z'], box_hi.outputs['Z'], 'Centro Z basetta')
+
+    domain = q.node('GeometryNodeAttributeDomainSize', 'Vertici modulo')
+    domain.component = 'MESH'
+    q.link(info.outputs['Geometry'], domain.inputs['Geometry'])
+    has_module = q.math('GREATER_THAN', domain.outputs['Point Count'], 0)
     length = q.node('GeometryNodeCurveLength')
     q.link(p['Curva'], length.inputs['Curve'])
-    count = q.node('FunctionNodeFloatToInt')
-    count.rounding_mode = 'FLOOR'
-    q.link(q.math('DIVIDE', length.outputs['Length'], safe), count.inputs['Float'])
-    line = q.node('GeometryNodeMeshLine', 'Un punto per pattern')
+    safe = q.math('MAXIMUM', p['Passo'], .0000001)
+    raw_count = q.node('FunctionNodeFloatToInt', 'Copie lungo la curva')
+    raw_count.rounding_mode = 'CEILING'
+    q.link(q.math('DIVIDE', length.outputs['Length'], safe), raw_count.inputs['Float'])
+    count = q.node('GeometryNodeSwitch', 'Nessuna copia senza PCB')
+    count.input_type = 'INT'
+    q.link(has_module, count.inputs['Switch'])
+    count.inputs['False'].default_value = 0
+    q.link(raw_count.outputs['Integer'], count.inputs['True'])
+    line = q.node('GeometryNodeMeshLine', 'Una copia per passo')
     line.mode = 'OFFSET'
-    q.link(count.outputs['Integer'], line.inputs['Count'])
-    q.link(q.vec(q.math('MULTIPLY', p['Min X'], -1), 0, 0), line.inputs['Start Location'])
-    q.link(q.vec(safe, 0, 0), line.inputs['Offset'])
-    along = q.node('ShaderNodeSeparateXYZ')
-    q.link(q.node('GeometryNodeInputPosition').outputs['Position'], along.inputs['Vector'])
-    sample = q.node('GeometryNodeSampleCurve')
+    q.link(count.outputs['Output'], line.inputs['Count'])
+    inst = q.node('GeometryNodeInstanceOnPoints', 'Copie del modulo')
+    q.link(line.outputs['Mesh'], inst.inputs['Points'])
+    q.link(cap.outputs['Geometry'], inst.inputs['Instance'])
+    stored = q.node('GeometryNodeStoreNamedAttribute', 'Indice copia')
+    stored.data_type = 'INT'
+    stored.domain = 'INSTANCE'
+    q.link(inst.outputs['Instances'], stored.inputs['Geometry'])
+    stored.inputs['Name'].default_value = 'copia'
+    q.link(q.node('GeometryNodeInputIndex').outputs['Index'], stored.inputs['Value'])
+    realize = q.node('GeometryNodeRealizeInstances', 'Modulo realizzato')
+    q.link(stored.outputs['Geometry'], realize.inputs['Geometry'])
+    copia = q.node('GeometryNodeInputNamedAttribute', 'Copia')
+    copia.data_type = 'INT'
+    copia.inputs['Name'].default_value = 'copia'
+    arc = q.math('ADD', q.math('SUBTRACT', orig.outputs['X'], p['Min X']),
+                 q.math('MULTIPLY', copia.outputs['Attribute'], p['Passo']), 'Arco')
+
+    sample = q.node('GeometryNodeSampleCurve', 'Punto sulla curva')
     sample.mode = 'LENGTH'
     sample.use_all_curves = True
     q.link(p['Curva'], sample.inputs['Curves'])
-    q.link(along.outputs['X'], sample.inputs['Length'])
-    sample_xyz = q.node('ShaderNodeSeparateXYZ')
-    q.link(sample.outputs['Position'], sample_xyz.inputs['Vector'])
-    inward = q.node('ShaderNodeVectorMath', 'Verso il mozzo')
-    inward.operation = 'NORMALIZE'
-    q.link(q.vec(q.math('MULTIPLY', sample_xyz.outputs['X'], -1),
-                 q.math('MULTIPLY', sample_xyz.outputs['Y'], -1), 0), inward.inputs[0])
-    axes = q.node('FunctionNodeAxesToRotation', 'X tangente / -Y esterno')
-    axes.primary_axis = 'X'
-    axes.secondary_axis = 'Y'
-    q.link(sample.outputs['Tangent'], axes.inputs['Primary Axis'])
-    q.link(inward.outputs['Vector'], axes.inputs['Secondary Axis'])
-    # Rotate on the straight line, then move: both read the unmoved X as arc length.
-    inst = q.node('GeometryNodeInstanceOnPoints', 'Componenti rigidi')
-    q.link(line.outputs['Mesh'], inst.inputs['Points'])
-    q.link(split.outputs['Selection'], inst.inputs['Instance'])
-    q.link(axes.outputs['Rotation'], inst.inputs['Rotation'])
-    placed = q.node('GeometryNodeSetPosition', 'Componenti sul percorso')
-    q.link(inst.outputs['Instances'], placed.inputs['Geometry'])
-    q.link(sample.outputs['Position'], placed.inputs['Position'])
-    return q.finish(q.join(base, placed.outputs['Geometry']))
+    q.link(arc, sample.inputs['Length'])
+    tangent = q.vmath('NORMALIZE', sample.outputs['Tangent'], label='Tangente')
+    sampled = q.node('ShaderNodeSeparateXYZ')
+    q.link(sample.outputs['Position'], sampled.inputs['Vector'])
+    radial = q.vmath('NORMALIZE', q.vec(sampled.outputs['X'], sampled.outputs['Y'], 0), label='Radiale')
+    # Keep the sampled normal pointing away from the hub, then perpendicular to the tangent.
+    outward = q.math('LESS_THAN', q.vmath('DOT_PRODUCT', sample.outputs['Normal'], radial), 0)
+    normal = q.vmath('SCALE', sample.outputs['Normal'], q.math('SUBTRACT', 1, q.math('MULTIPLY', outward, 2)))
+    normal = q.vmath('SUBTRACT', normal, q.vmath('SCALE', tangent, q.vmath('DOT_PRODUCT', normal, tangent)))
+    normal = q.vmath('NORMALIZE', normal, label='Normale esterna')
+    binormal = q.vmath('CROSS_PRODUCT', normal, tangent, 'Binormale')
+    b_xyz = q.node('ShaderNodeSeparateXYZ')
+    t_xyz = q.node('ShaderNodeSeparateXYZ')
+    q.link(binormal, b_xyz.inputs['Vector'])
+    q.link(tangent, t_xyz.inputs['Vector'])
+    # On a reversed layer the binormal points down. Flip it back while the path is horizontal.
+    flip_b = q.math('MINIMUM', q.math('LESS_THAN', q.math('ABSOLUTE', t_xyz.outputs['Z']), .5),
+                    q.math('LESS_THAN', b_xyz.outputs['Z'], 0))
+    binormal = q.vmath('SCALE', binormal, q.math('SUBTRACT', 1, q.math('MULTIPLY', flip_b, 2)), 'Binormale in su')
+    y_rel = q.math('SUBTRACT', orig.outputs['Y'], center_y)
+    z_rel = q.math('SUBTRACT', orig.outputs['Z'], center_z)
+    moved = q.vmath('ADD', sample.outputs['Position'], q.vmath(
+        'ADD', q.vmath('SCALE', normal, q.math('MULTIPLY', y_rel, -1), '-Y verso l\'esterno'),
+        q.vmath('SCALE', binormal, z_rel, 'Z in verticale')))
+    placed = q.node('GeometryNodeSetPosition', 'Vertici sul percorso')
+    q.link(realize.outputs['Geometry'], placed.inputs['Geometry'])
+    q.link(moved, placed.inputs['Position'])
+    cut = q.node('GeometryNodeDeleteGeometry', 'Oltre la fine')
+    cut.domain = 'POINT'
+    cut.mode = 'ALL'
+    q.link(placed.outputs['Geometry'], cut.inputs['Geometry'])
+    q.link(q.math('GREATER_THAN', arc, q.math('ADD', length.outputs['Length'], .00001)), cut.inputs['Selection'])
+    weld = q.node('GeometryNodeMergeByDistance', 'Salda le giunzioni')
+    q.link(cut.outputs['Geometry'], weld.inputs['Geometry'])
+    weld.inputs['Mode'].default_value = 'All'
+    weld.inputs['Distance'].default_value = .00001
+    out = q.node('GeometryNodeSwitch', 'Solo con un PCB scelto')
+    out.input_type = 'GEOMETRY'
+    q.link(has_module, out.inputs['Switch'])
+    q.link(weld.outputs['Geometry'], out.inputs['True'])
+    return q.finish(out.outputs['Output'])
 
 
 def build_reel():
@@ -702,9 +750,8 @@ Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
 3. In pcb metti un .blend per codice. L'oggetto mesh ha il nome del file
    senza estensione, per esempio FN01234. Origine al centro del passo.
    X è il passo lungo il nastro, Z è la larghezza, il lato LED guarda verso -Y.
-   La base è un parallelepipedo staccato dai componenti, lungo tutto il passo:
-   diventa un nastro unico senza cuciture, con la sua sezione e il suo materiale.
-   Gli altri pezzi restano rigidi e si ripetono a ogni passo lungo la curva.
+   Il modulo viene ripetuto così com'è: ogni vertice segue la curva, quindi
+   basetta e LED restano quelli del file, senza giunzione fra una copia e la successiva.
 4. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
    oppure esegui una volta il testo LED Studio Libreria.
    Nel modificatore Configurazione prodotto scegli Bobina e poi PCB.
@@ -814,29 +861,94 @@ def mesh_report(obj):
     return zs, mats, islands, strip_z
 
 
-def instance_points(obj):
-    """Instance origins in object space, and whether each one's -Y faces away from the axis."""
+def analyze_strip(obj):
+    """The welded base is the one large island. Each rigid part must sit just outside it."""
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
-    pts = []
-    outward = []
-    seen = []
-    to_local = obj.matrix_world.inverted()
-    for inst in deps.object_instances:
-        if not inst.is_instance:
+    ev = obj.evaluated_get(deps)
+    mesh = ev.to_mesh()
+    zs = [v.co.z for v in mesh.vertices]
+    mats = [slot.name for slot in mesh.materials if slot]
+    parent = list(range(len(mesh.vertices)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for edge in mesh.edges:
+        a, b = root(edge.vertices[0]), root(edge.vertices[1])
+        if a != b:
+            parent[a] = b
+    groups = {}
+    for i in range(len(mesh.vertices)):
+        groups.setdefault(root(i), []).append(i)
+    islands = list(groups.values())
+    report = {'verts': len(zs), 'z': (min(zs), max(zs)) if zs else None, 'mats': mats,
+              'base_verts': 0, 'base_span': None, 'big_islands': 0,
+              'components': 0, 'near': 0, 'seated': 0, 'low': 0, 'high': 0, 'gap': None}
+    gaps = []
+    if not islands:
+        ev.to_mesh_clear()
+        return report
+    base_ids = max(islands, key=len)
+    report['base_verts'] = len(base_ids)
+    report['big_islands'] = sum(1 for ids in islands if len(ids) > 500)
+    cell = .004
+    grid = {}
+    span = []
+    for i in base_ids:
+        co = mesh.vertices[i].co
+        key = tuple(int(math.floor(axis / cell)) for axis in co)
+        grid.setdefault(key, []).append(Vector(co))
+        if .03 < math.hypot(co.x, co.y) < .095:
+            span.append(co.z)
+    if span:
+        report['base_span'] = (min(span), max(span))
+
+    def nearest(point):
+        base_key = tuple(int(math.floor(axis / cell)) for axis in point)
+        found = None
+        gap = None
+        for dz in range(-2, 3):
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    for co in grid.get((base_key[0] + dx, base_key[1] + dy, base_key[2] + dz), ()):
+                        dist = (co - point).length
+                        if gap is None or dist < gap:
+                            gap = dist
+                            found = co
+        return gap, found
+
+    for ids in islands:
+        if ids is base_ids or len(ids) > 24:
             continue
-        parent = inst.parent
-        original = getattr(parent, 'original', None) if parent else None
-        if original == obj or parent == obj:
-            matrix = to_local @ inst.matrix_world
-            origin = matrix.translation
-            pts.append(origin)
-            led_side = -matrix.col[1].xyz
-            radial = Vector((origin.x, origin.y, 0))
-            outward.append(radial.length > 1e-6 and led_side.normalized().dot(radial.normalized()) > .7)
-        elif len(seen) < 6:
-            seen.append(getattr(original, 'name', None))
-    return pts, outward, seen
+        acc = Vector()
+        for i in ids:
+            acc += mesh.vertices[i].co
+        center = acc / len(ids)
+        radius = math.hypot(center.x, center.y)
+        if radius < .02:
+            continue
+        report['components'] += 1
+        gap, found = nearest(center)
+        if gap is not None:
+            gaps.append(gap)
+        if found is not None and gap < .006:
+            report['near'] += 1
+            outward = Vector((found.x, found.y, 0))
+            if outward.length > 1e-6 and (center - found).dot(outward.normalized()) > .00005:
+                report['seated'] += 1
+        if center.z < -.001:
+            report['low'] += 1
+        if center.z > .001:
+            report['high'] += 1
+    if gaps:
+        gaps.sort()
+        report['gap'] = gaps[len(gaps) // 2]
+    ev.to_mesh_clear()
+    return report
 
 
 def exercise_library(scene, obj, values):
@@ -872,38 +984,32 @@ def exercise_library(scene, obj, values):
             raise RuntimeError(obj.led_studio.status)
         mod = obj.modifiers['Configurazione prodotto']
         set_input(mod, 'Altezza bobina', .020)
-        zs, mats, islands, _strip_z = mesh_report(obj)
-        pts, outward, seen = instance_points(obj)
-        print('LED_CHECK library verts', len(zs), 'z', (min(zs), max(zs)), 'islands', islands,
-              'instances', len(pts), 'outward', sum(outward), 'mats', mats, 'other', seen)
-        if not zs or min(zs) > -.011 or max(zs) < .011:
+        report = analyze_strip(obj)
+        print('LED_CHECK library', report)
+        if not report['z'] or report['z'][0] > -.011 or report['z'][1] < .011:
             raise RuntimeError('Le flange non si sono aperte alla luce richiesta')
-        if not any('test mozzo' in name for name in mats):
-            raise RuntimeError('Il cilindro non ha preso il materiale di up: ' + ', '.join(mats))
-        if not any('test base pcb' in name for name in mats):
-            raise RuntimeError('La base trascinata non ha il materiale della base: ' + ', '.join(mats))
-        # up, down, hub cylinder and one continuous base.
-        if islands != 4:
-            raise RuntimeError('La base non è un unico pezzo: %d isole invece di 4' % islands)
-        low = [p for p in pts if -.009 < p.z < -.002]
-        high = [p for p in pts if .002 < p.z < .009]
-        if not low or not high:
+        if not any('test mozzo' in name for name in report['mats']):
+            raise RuntimeError('Il cilindro non ha preso il materiale di up: ' + ', '.join(report['mats']))
+        if not any('test base pcb' in name for name in report['mats']):
+            raise RuntimeError('La basetta non ha il materiale del modulo: ' + ', '.join(report['mats']))
+        if report['big_islands'] != 1:
+            raise RuntimeError('La basetta non è un unico pezzo: %d isole grandi' % report['big_islands'])
+        if not report['components'] or report['near'] != report['components'] or report['seated'] < report['components'] * .99:
+            raise RuntimeError('Componenti staccati dalla basetta: %d vicini, %d esterni, su %d' % (
+                report['near'], report['seated'], report['components']))
+        if not report['low'] or not report['high']:
             raise RuntimeError('Mancano i componenti su uno dei due livelli')
-        if not all(outward):
-            raise RuntimeError('%d componenti guardano verso il mozzo' % (len(outward) - sum(outward)))
-        two_levels = len(pts)
+        two_levels = report['verts']
         set_input(mod, 'Altezza bobina', .010)
-        zs, _mats, islands, strip_z = mesh_report(obj)
-        pts, outward, _seen = instance_points(obj)
-        print('LED_CHECK un livello', len(pts), 'islands', islands,
-              'base z', (min(strip_z), max(strip_z)) if strip_z else None)
-        if len(pts) > two_levels * 0.7:
+        report = analyze_strip(obj)
+        print('LED_CHECK un livello', report)
+        if report['verts'] > two_levels * 0.7:
             raise RuntimeError('Abbassare la bobina non ha tolto il secondo livello')
-        if islands != 4 or not all(outward):
-            raise RuntimeError('Un livello: base spezzata o componenti girati')
-        # The 8 mm base width must stand vertically, not the 0.3 mm thickness.
-        if not strip_z or max(strip_z) - min(strip_z) < .007:
-            raise RuntimeError('La larghezza della base non è verticale')
+        if report['big_islands'] != 1 or report['near'] != report['components'] or report['seated'] < report['components'] * .99:
+            raise RuntimeError('Un livello: basetta spezzata o componenti staccati')
+        span = report['base_span']
+        if not span or span[1] - span[0] < .007:
+            raise RuntimeError('La larghezza della basetta non è verticale')
     finally:
         if obj.led_studio.bobina != 'NONE':
             obj.led_studio.bobina = 'NONE'
