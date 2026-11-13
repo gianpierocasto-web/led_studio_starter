@@ -33,6 +33,6 @@ _Vedi struttura cartelle sopra._
 - Rigenera README: `generate-readme.ps1 -Force`
 - Bootstrap: `ensure-bootstrap.ps1`
 
-- 164 nodes · 338 edges · 7 communities (6 shown, 1 thin omitted)
+- 166 nodes · 342 edges · 7 communities (6 shown, 1 thin omitted)
 - Report: LED_Studio_Starter (2026-11-13)
-- Git commit: `9fd4ca7`
+- Git commit: `0f635a4`

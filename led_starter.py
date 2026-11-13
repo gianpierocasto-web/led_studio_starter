@@ -328,28 +328,38 @@ def build_strip():
     return q.finish(out.outputs['Output'])
 
 
+def realize_collection(q, collection, label):
+    """Every object in the collection, at the position it was given, as real vertices."""
+    info = q.node('GeometryNodeCollectionInfo', label)
+    info.transform_space = 'ORIGINAL'
+    info.inputs['Separate Children'].default_value = True
+    info.inputs['Reset Children'].default_value = False
+    q.link(collection, info.inputs['Collection'])
+    real = q.node('GeometryNodeRealizeInstances', label + ' reali')
+    real.inputs['Realize All'].default_value = True
+    q.link(info.outputs['Instances'], real.inputs['Geometry'])
+    return real.outputs['Geometry']
+
+
 def build_cable():
-    """Lay the cable mesh once, starting where the strip ends."""
+    """Lay every mesh in the cable collection once, starting where the strip ends."""
     q = Graph('LED | 04 Cavo su curva')
     q.sock('Curva', 'NodeSocketGeometry')
-    q.sock('Cavo', 'NodeSocketObject')
+    q.sock('Cavo', 'NodeSocketCollection')
     q.sock('Inizio', default=0, lo=0, hi=40,
            description='Arco, in metri, dove finisce la striscia.')
     p = q.i.outputs
-    info = q.node('GeometryNodeObjectInfo', 'Cavo')
-    info.transform_space = 'ORIGINAL'
-    info.inputs['As Instance'].default_value = False
-    q.link(p['Cavo'], info.inputs['Object'])
+    geo = realize_collection(q, p['Cavo'], 'Cavo')
     pos = q.node('GeometryNodeInputPosition')
     cap = q.node('GeometryNodeCaptureAttribute', 'Posizione nel cavo')
     cap.domain = 'POINT'
     cap.capture_items.new('VECTOR', 'Origine')
-    q.link(info.outputs['Geometry'], cap.inputs['Geometry'])
+    q.link(geo, cap.inputs['Geometry'])
     q.link(pos.outputs['Position'], cap.inputs['Origine'])
     orig = q.node('ShaderNodeSeparateXYZ')
     q.link(cap.outputs['Origine'], orig.inputs['Vector'])
     box = q.node('GeometryNodeBoundBox', 'Ingombro cavo')
-    q.link(info.outputs['Geometry'], box.inputs['Geometry'])
+    q.link(geo, box.inputs['Geometry'])
     box_lo = q.node('ShaderNodeSeparateXYZ')
     box_hi = q.node('ShaderNodeSeparateXYZ')
     q.link(box.outputs['Min'], box_lo.inputs['Vector'])
@@ -361,7 +371,7 @@ def build_cable():
     stat = q.node('GeometryNodeAttributeStatistic', 'Sezione di attacco')
     stat.data_type = 'FLOAT_VECTOR'
     stat.domain = 'POINT'
-    q.link(info.outputs['Geometry'], stat.inputs['Geometry'])
+    q.link(geo, stat.inputs['Geometry'])
     q.link(at_start, stat.inputs['Selection'])
     q.link(pos.outputs['Position'], stat.inputs['Attribute'])
     sec_lo = q.node('ShaderNodeSeparateXYZ')
@@ -409,7 +419,7 @@ def build_cable():
     q.link(q.math('GREATER_THAN', arc, q.math('ADD', length.outputs['Length'], .00001)), cut.inputs['Selection'])
     domain = q.node('GeometryNodeAttributeDomainSize', 'Vertici cavo')
     domain.component = 'MESH'
-    q.link(info.outputs['Geometry'], domain.inputs['Geometry'])
+    q.link(geo, domain.inputs['Geometry'])
     out = q.node('GeometryNodeSwitch', 'Solo con un cavo scelto')
     out.input_type = 'GEOMETRY'
     q.link(q.math('GREATER_THAN', domain.outputs['Point Count'], 0), out.inputs['Switch'])
@@ -466,7 +476,7 @@ def build_master(path, strip, reel, cable):
     q.sock('Flangia up', 'NodeSocketObject')
     q.sock('Flangia down', 'NodeSocketObject')
     q.sock('Modulo PCB', 'NodeSocketObject')
-    q.sock('Cavo', 'NodeSocketObject')
+    q.sock('Cavo', 'NodeSocketCollection')
     for name, value, lo, hi in [('Raggio mozzo', .026, .012, .08), ('Raggio avvolgimento', .078, .025, .18),
                                 ('Passo radiale', .002, .0012, .008), ('Giri uscita', .83, .25, 1.5),
                                 ('Apertura uscita', .035, .005, .08)]:
@@ -555,12 +565,9 @@ def build_master(path, strip, reel, cable):
     q.link(p['Modulo PCB'], strip_node.inputs['Modulo PCB'])
     q.link(passo, strip_node.inputs['Passo'])
     q.link(lo.outputs['X'], strip_node.inputs['Min X'])
-    cinfo = q.node('GeometryNodeObjectInfo', 'Cavo')
-    cinfo.transform_space = 'ORIGINAL'
-    cinfo.inputs['As Instance'].default_value = False
-    q.link(p['Cavo'], cinfo.inputs['Object'])
+    cinfo = realize_collection(q, p['Cavo'], 'Cavo')
     cbox = q.node('GeometryNodeBoundBox', 'Lunghezza cavo')
-    q.link(cinfo.outputs['Geometry'], cbox.inputs['Geometry'])
+    q.link(cinfo, cbox.inputs['Geometry'])
     c_lo = q.node('ShaderNodeSeparateXYZ')
     c_hi = q.node('ShaderNodeSeparateXYZ')
     q.link(cbox.outputs['Min'], c_lo.inputs['Vector'])
@@ -844,6 +851,48 @@ def assign_library(obj, kind, filename, mapping):
     settings.status = ''
 
 
+def load_collection(rel_path, name):
+    target = norm(rel_path)
+    for col in bpy.data.collections:
+        lib = col.library
+        if lib is None or norm(lib.filepath) != target:
+            continue
+        if same_object(name, col.name):
+            return col
+    with bpy.data.libraries.load(rel_path, link=True) as (src, dst):
+        dst.collections = [item for item in src.collections if same_object(name, item)]
+    for col in dst.collections:
+        if col is not None and same_object(name, col.name):
+            return col
+    return None
+
+
+def assign_collection(obj, kind, filename, socket, name):
+    settings = obj.led_studio
+    if filename == 'NONE':
+        set_socket(obj, socket, None)
+        settings.status = ''
+        return
+    rel = '//' + kind + '/' + filename
+    if not os.path.isfile(bpy.path.abspath(rel)):
+        settings.status = 'File mancante: ' + filename
+        return
+    try:
+        col = load_collection(rel, name)
+    except Exception as exc:
+        settings.status = str(exc)
+        return
+    if col is None:
+        settings.status = 'Nel file manca la collection: ' + name
+        return
+    parent = ensure_collection()
+    if col.name not in parent.children:
+        parent.children.link(col)
+    col.hide_render = True
+    set_socket(obj, socket, col)
+    settings.status = ''
+
+
 def update_bobina(self, context):
     assign_library(self.id_data, 'bobine', self.bobina, {'Flangia up': 'up', 'Flangia down': 'down'})
 
@@ -855,7 +904,7 @@ def update_pcb(self, context):
 
 def update_cavo(self, context):
     stem = self.cavo[:-6] if self.cavo.lower().endswith('.blend') else self.cavo
-    assign_library(self.id_data, 'cavi', self.cavo, {'Cavo': stem})
+    assign_collection(self.id_data, 'cavi', self.cavo, 'Cavo', stem)
 
 
 class LEDStudioSettings(bpy.types.PropertyGroup):
@@ -927,10 +976,12 @@ Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
    X è il passo lungo il nastro, Z è la larghezza, il lato LED guarda verso -Y.
    Il modulo viene ripetuto così com'è: ogni vertice segue la curva, quindi
    basetta e LED restano quelli del file, senza giunzione fra una copia e la successiva.
-4. In cavi metti un .blend per cavo. L'oggetto mesh ha il nome del file
-   senza estensione. X è la lunghezza: il capo a X minimo si attacca alla
-   striscia, il connettore sta verso X massimo. La sezione sta in Y e Z,
-   il lato -Y guarda fuori dal mozzo. Non si ripete: la misura X è il tratto.
+4. In cavi metti un .blend per cavo. La collection ha il nome del file
+   senza estensione e può contenere più mesh. X è la lunghezza: il capo a
+   X minimo si attacca alla striscia, il connettore sta verso X massimo.
+   La sezione sta in Y e Z, il lato -Y guarda fuori dal mozzo.
+   Conta la posizione di ogni oggetto: non unirli e non applicare i transform.
+   Non si ripete: la misura X complessiva è il tratto.
 5. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
    oppure esegui una volta il testo LED Studio Libreria.
    Nel modificatore Configurazione prodotto scegli Bobina, PCB e poi Cavo.
@@ -1014,8 +1065,8 @@ def make_pcb_piece(name, material):
     return bpy.data.objects.new(name, mesh)
 
 
-def make_cable(name, material):
-    """An 8 cm tube along X, plus a connector at the far end."""
+def make_cable(name, tube_mat, plug_mat):
+    """A tube and a separate connector, kept apart by the connector's location."""
     segs = 16
     length = .08
     radius = .0015
@@ -1031,22 +1082,28 @@ def make_cable(name, material):
             nxt = (i + 1) % segs
             a = ring * segs + i
             b = ring * segs + nxt
-            c = a + segs
-            d = b + segs
-            faces.append((a, c, d, b))
+            faces.append((a, a + segs, b + segs, b))
+    tube_mesh = bpy.data.meshes.new(name + ' tubo')
+    tube_mesh.from_pydata(verts, [], faces)
+    tube_mesh.materials.append(tube_mat)
+    tube_mesh.update()
+    tube = bpy.data.objects.new(name + ' tubo', tube_mesh)
     hx, hy, hz = .006, .002, .002
-    cx = length + hx
-    start = len(verts)
+    box = []
     for x, y, z in [(-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz),
                     (-hx, -hy, hz), (hx, -hy, hz), (hx, hy, hz), (-hx, hy, hz)]:
-        verts.append((cx + x, y, z))
-    for face in [(0, 1, 2, 3), (4, 7, 6, 5), (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 4, 0)]:
-        faces.append(tuple(start + i for i in face))
-    mesh = bpy.data.meshes.new(name)
-    mesh.from_pydata(verts, [], faces)
-    mesh.materials.append(material)
-    mesh.update()
-    return bpy.data.objects.new(name, mesh)
+        box.append((x, y, z))
+    box_faces = [(0, 1, 2, 3), (4, 7, 6, 5), (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 4, 0)]
+    plug_mesh = bpy.data.meshes.new(name + ' connettore')
+    plug_mesh.from_pydata(box, [], box_faces)
+    plug_mesh.materials.append(plug_mat)
+    plug_mesh.update()
+    plug = bpy.data.objects.new(name + ' connettore', plug_mesh)
+    plug.location.x = length + hx
+    col = bpy.data.collections.new(name)
+    col.objects.link(tube)
+    col.objects.link(plug)
+    return col
 
 
 def mesh_report(obj):
@@ -1173,20 +1230,31 @@ def check_cable(obj, mat_name):
     ev = obj.evaluated_get(deps)
     mesh = ev.to_mesh()
     cable = []
+    plug = []
     used = set()
     for poly in mesh.polygons:
         slot = mesh.materials[poly.material_index] if poly.material_index < len(mesh.materials) else None
         if slot is None or mat_name not in slot.name:
             continue
+        is_plug = 'connettore' in slot.name
         for index in poly.vertices:
             if index not in used:
                 used.add(index)
-                cable.append(mesh.vertices[index].co.copy())
+                co = mesh.vertices[index].co.copy()
+                cable.append(co)
+                if is_plug:
+                    plug.append(co)
     strip = [v.co.copy() for i, v in enumerate(mesh.vertices)
              if i not in used and abs(v.co.z) < .0045 and math.hypot(v.co.x, v.co.y) > .03]
     ev.to_mesh_clear()
     if len(cable) < 8 or len(strip) < 8:
-        raise RuntimeError('Il cavo non è in scena')
+        raise RuntimeError('Il cavo non è in scena: pezzi %d, striscia %d' % (len(cable), len(strip)))
+    if len(plug) < 8:
+        raise RuntimeError('Manca il connettore: la collection non è arrivata intera')
+    plug_r = max(math.hypot(v.x, v.y) for v in plug)
+    tube_r = max(math.hypot(v.x, v.y) for v in cable if v not in plug)
+    if plug_r <= tube_r:
+        raise RuntimeError('Il connettore non sta oltre il tubo')
     tip = max(math.hypot(v.x, v.y) for v in strip)
     inner = min(cable, key=lambda v: math.hypot(v.x, v.y))
     ring = [v for v in cable if (v - inner).length < .0032]
@@ -1244,22 +1312,33 @@ def exercise_library(scene, obj, values):
     mat = make_material('test mozzo', (.2, .45, .8), 0, .4)
     pcb_mat = make_material('test base pcb', (.9, .9, .85), 0, .4)
     cable_mat = make_material('test cavo', (.95, .95, .95), 0, .35)
+    plug_mat = make_material('test cavo connettore', (.2, .2, .2), .6, .3)
     up = make_box('up', (.2, .2, .002), (0, 0, .005))
     down = make_box('down', (.2, .2, .002), (0, 0, -.005))
     pcb = make_pcb_piece('FN01234', pcb_mat)
-    cable = make_cable('cavo bianco', cable_mat)
+    cable = make_cable('cavo bianco', cable_mat, plug_mat)
     up.data.materials.append(mat)
     bobina_path = os.path.join(temp, 'bobine', 'bobina bianca.blend')
     pcb_path = os.path.join(temp, 'pcb', 'FN01234.blend')
     cable_path = os.path.join(temp, 'cavi', 'cavo bianco.blend')
     bpy.data.libraries.write(bobina_path, {up, up.data, down, down.data, mat}, fake_user=True)
     bpy.data.libraries.write(pcb_path, {pcb, pcb.data, pcb_mat}, fake_user=True)
-    bpy.data.libraries.write(cable_path, {cable, cable.data, cable_mat}, fake_user=True)
-    for piece in (up, down, pcb, cable):
+    cable_ids = {cable, cable_mat, plug_mat}
+    for piece in cable.objects:
+        cable_ids.add(piece)
+        cable_ids.add(piece.data)
+    bpy.data.libraries.write(cable_path, cable_ids, fake_user=True)
+    for piece in (up, down, pcb):
         data = piece.data
         bpy.data.objects.remove(piece, do_unlink=True)
         if data.users == 0:
             bpy.data.meshes.remove(data)
+    for piece in list(cable.objects):
+        data = piece.data
+        bpy.data.objects.remove(piece, do_unlink=True)
+        if data.users == 0:
+            bpy.data.meshes.remove(data)
+    bpy.data.collections.remove(cable)
     try:
         bpy.context.window.scene = scene
         if 'bobina bianca.blend' not in [item[0] for item in panel['bobina_items'](None, None)]:
@@ -1316,9 +1395,16 @@ def exercise_library(scene, obj, values):
             for block in list(collection):
                 if block.library and block.users == 0:
                     collection.remove(block)
+        for col in list(bpy.data.collections):
+            if not col.library:
+                continue
+            for parent in bpy.data.collections:
+                if col.name in parent.children:
+                    parent.children.unlink(col)
+            bpy.data.collections.remove(col)
         for lib in list(bpy.data.libraries):
             bpy.data.libraries.remove(lib)
-        for name in ('test mozzo', 'test base pcb', 'test cavo'):
+        for name in ('test mozzo', 'test base pcb', 'test cavo', 'test cavo connettore'):
             local = bpy.data.materials.get(PREFIX + ' | ' + name)
             if local and local.users == 0:
                 bpy.data.materials.remove(local)

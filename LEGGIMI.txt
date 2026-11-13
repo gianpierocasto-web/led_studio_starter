@@ -12,10 +12,12 @@ Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
    X è il passo lungo il nastro, Z è la larghezza, il lato LED guarda verso -Y.
    Il modulo viene ripetuto così com'è: ogni vertice segue la curva, quindi
    basetta e LED restano quelli del file, senza giunzione fra una copia e la successiva.
-4. In cavi metti un .blend per cavo. L'oggetto mesh ha il nome del file
-   senza estensione. X è la lunghezza: il capo a X minimo si attacca alla
-   striscia, il connettore sta verso X massimo. La sezione sta in Y e Z,
-   il lato -Y guarda fuori dal mozzo. Non si ripete: la misura X è il tratto.
+4. In cavi metti un .blend per cavo. La collection ha il nome del file
+   senza estensione e può contenere più mesh. X è la lunghezza: il capo a
+   X minimo si attacca alla striscia, il connettore sta verso X massimo.
+   La sezione sta in Y e Z, il lato -Y guarda fuori dal mozzo.
+   Conta la posizione di ogni oggetto: non unirli e non applicare i transform.
+   Non si ripete: la misura X complessiva è il tratto.
 5. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
    oppure esegui una volta il testo LED Studio Libreria.
    Nel modificatore Configurazione prodotto scegli Bobina, PCB e poi Cavo.
