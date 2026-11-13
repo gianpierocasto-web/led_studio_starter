@@ -65,7 +65,9 @@ class Graph:
         self.link(a, n.inputs[0])
         if b is not None:
             self.link(b, n.inputs['Scale'] if operation == 'SCALE' else n.inputs[1])
-        return n.outputs['Value'] if operation == 'DOT_PRODUCT' else n.outputs['Vector']
+        if operation in ('DOT_PRODUCT', 'LENGTH', 'DISTANCE'):
+            return n.outputs['Value']
+        return n.outputs['Vector']
 
     def compare(self, a, b, eps=0.1, label=''):
         n = self.node('ShaderNodeMath', label or 'COMPARE')
@@ -326,6 +328,95 @@ def build_strip():
     return q.finish(out.outputs['Output'])
 
 
+def build_cable():
+    """Lay the cable mesh once, starting where the strip ends."""
+    q = Graph('LED | 04 Cavo su curva')
+    q.sock('Curva', 'NodeSocketGeometry')
+    q.sock('Cavo', 'NodeSocketObject')
+    q.sock('Inizio', default=0, lo=0, hi=40,
+           description='Arco, in metri, dove finisce la striscia.')
+    p = q.i.outputs
+    info = q.node('GeometryNodeObjectInfo', 'Cavo')
+    info.transform_space = 'ORIGINAL'
+    info.inputs['As Instance'].default_value = False
+    q.link(p['Cavo'], info.inputs['Object'])
+    pos = q.node('GeometryNodeInputPosition')
+    cap = q.node('GeometryNodeCaptureAttribute', 'Posizione nel cavo')
+    cap.domain = 'POINT'
+    cap.capture_items.new('VECTOR', 'Origine')
+    q.link(info.outputs['Geometry'], cap.inputs['Geometry'])
+    q.link(pos.outputs['Position'], cap.inputs['Origine'])
+    orig = q.node('ShaderNodeSeparateXYZ')
+    q.link(cap.outputs['Origine'], orig.inputs['Vector'])
+    box = q.node('GeometryNodeBoundBox', 'Ingombro cavo')
+    q.link(info.outputs['Geometry'], box.inputs['Geometry'])
+    box_lo = q.node('ShaderNodeSeparateXYZ')
+    box_hi = q.node('ShaderNodeSeparateXYZ')
+    q.link(box.outputs['Min'], box_lo.inputs['Vector'])
+    q.link(box.outputs['Max'], box_hi.inputs['Vector'])
+    # The end that meets the strip is min X. Its section, not the connector, sits on the curve.
+    here = q.node('ShaderNodeSeparateXYZ')
+    q.link(pos.outputs['Position'], here.inputs['Vector'])
+    at_start = q.math('LESS_THAN', here.outputs['X'], q.math('ADD', box_lo.outputs['X'], .00001))
+    stat = q.node('GeometryNodeAttributeStatistic', 'Sezione di attacco')
+    stat.data_type = 'FLOAT_VECTOR'
+    stat.domain = 'POINT'
+    q.link(info.outputs['Geometry'], stat.inputs['Geometry'])
+    q.link(at_start, stat.inputs['Selection'])
+    q.link(pos.outputs['Position'], stat.inputs['Attribute'])
+    sec_lo = q.node('ShaderNodeSeparateXYZ')
+    sec_hi = q.node('ShaderNodeSeparateXYZ')
+    q.link(stat.outputs['Min'], sec_lo.inputs['Vector'])
+    q.link(stat.outputs['Max'], sec_hi.inputs['Vector'])
+    center_y = q.math('MULTIPLY', q.math('ADD', sec_lo.outputs['Y'], sec_hi.outputs['Y']), .5)
+    center_z = q.math('MULTIPLY', q.math('ADD', sec_lo.outputs['Z'], sec_hi.outputs['Z']), .5)
+    arc = q.math('ADD', p['Inizio'], q.math('SUBTRACT', orig.outputs['X'], box_lo.outputs['X']), 'Arco')
+    length = q.node('GeometryNodeCurveLength')
+    q.link(p['Curva'], length.inputs['Curve'])
+    sample = q.node('GeometryNodeSampleCurve', 'Punto sulla curva')
+    sample.mode = 'LENGTH'
+    sample.use_all_curves = True
+    q.link(p['Curva'], sample.inputs['Curves'])
+    q.link(arc, sample.inputs['Length'])
+    tangent = q.vmath('NORMALIZE', sample.outputs['Tangent'], label='Tangente')
+    sampled = q.node('ShaderNodeSeparateXYZ')
+    q.link(sample.outputs['Position'], sampled.inputs['Vector'])
+    radial = q.vmath('NORMALIZE', q.vec(sampled.outputs['X'], sampled.outputs['Y'], 0), label='Radiale')
+    outward = q.math('LESS_THAN', q.vmath('DOT_PRODUCT', sample.outputs['Normal'], radial), 0)
+    normal = q.vmath('SCALE', sample.outputs['Normal'], q.math('SUBTRACT', 1, q.math('MULTIPLY', outward, 2)))
+    normal = q.vmath('SUBTRACT', normal, q.vmath('SCALE', tangent, q.vmath('DOT_PRODUCT', normal, tangent)))
+    normal = q.vmath('NORMALIZE', normal, label='Normale esterna')
+    binormal = q.vmath('CROSS_PRODUCT', normal, tangent, 'Binormale')
+    b_xyz = q.node('ShaderNodeSeparateXYZ')
+    t_xyz = q.node('ShaderNodeSeparateXYZ')
+    q.link(binormal, b_xyz.inputs['Vector'])
+    q.link(tangent, t_xyz.inputs['Vector'])
+    flip_b = q.math('MINIMUM', q.math('LESS_THAN', q.math('ABSOLUTE', t_xyz.outputs['Z']), .5),
+                    q.math('LESS_THAN', b_xyz.outputs['Z'], 0))
+    binormal = q.vmath('SCALE', binormal, q.math('SUBTRACT', 1, q.math('MULTIPLY', flip_b, 2)), 'Binormale in su')
+    y_rel = q.math('SUBTRACT', orig.outputs['Y'], center_y)
+    z_rel = q.math('SUBTRACT', orig.outputs['Z'], center_z)
+    moved = q.vmath('ADD', sample.outputs['Position'], q.vmath(
+        'ADD', q.vmath('SCALE', normal, q.math('MULTIPLY', y_rel, -1), '-Y verso l\'esterno'),
+        q.vmath('SCALE', binormal, z_rel, 'Z in verticale')))
+    placed = q.node('GeometryNodeSetPosition', 'Cavo sul percorso')
+    q.link(cap.outputs['Geometry'], placed.inputs['Geometry'])
+    q.link(moved, placed.inputs['Position'])
+    cut = q.node('GeometryNodeDeleteGeometry', 'Oltre la fine')
+    cut.domain = 'POINT'
+    cut.mode = 'ALL'
+    q.link(placed.outputs['Geometry'], cut.inputs['Geometry'])
+    q.link(q.math('GREATER_THAN', arc, q.math('ADD', length.outputs['Length'], .00001)), cut.inputs['Selection'])
+    domain = q.node('GeometryNodeAttributeDomainSize', 'Vertici cavo')
+    domain.component = 'MESH'
+    q.link(info.outputs['Geometry'], domain.inputs['Geometry'])
+    out = q.node('GeometryNodeSwitch', 'Solo con un cavo scelto')
+    out.input_type = 'GEOMETRY'
+    q.link(q.math('GREATER_THAN', domain.outputs['Point Count'], 0), out.inputs['Switch'])
+    q.link(cut.outputs['Geometry'], out.inputs['True'])
+    return q.finish(out.outputs['Output'])
+
+
 def build_reel():
     """Move up and down apart. A cylinder fills the opening with up's first material."""
     q = Graph('LED | 03 Bobina parametrica')
@@ -369,12 +460,13 @@ def build_reel():
     return q.finish(q.join(up, down, hub))
 
 
-def build_master(path, strip, reel):
-    """Stack alternating spiral layers in the reel opening and instance the PCB."""
+def build_master(path, strip, reel, cable):
+    """Stack alternating spiral layers in the reel opening and lay the PCB and cable."""
     q = Graph('LED | 00 Prodotto completo')
     q.sock('Flangia up', 'NodeSocketObject')
     q.sock('Flangia down', 'NodeSocketObject')
     q.sock('Modulo PCB', 'NodeSocketObject')
+    q.sock('Cavo', 'NodeSocketObject')
     for name, value, lo, hi in [('Raggio mozzo', .026, .012, .08), ('Raggio avvolgimento', .078, .025, .18),
                                 ('Passo radiale', .002, .0012, .008), ('Giri uscita', .83, .25, 1.5),
                                 ('Apertura uscita', .035, .005, .08)]:
@@ -463,10 +555,76 @@ def build_master(path, strip, reel):
     q.link(p['Modulo PCB'], strip_node.inputs['Modulo PCB'])
     q.link(passo, strip_node.inputs['Passo'])
     q.link(lo.outputs['X'], strip_node.inputs['Min X'])
+    cinfo = q.node('GeometryNodeObjectInfo', 'Cavo')
+    cinfo.transform_space = 'ORIGINAL'
+    cinfo.inputs['As Instance'].default_value = False
+    q.link(p['Cavo'], cinfo.inputs['Object'])
+    cbox = q.node('GeometryNodeBoundBox', 'Lunghezza cavo')
+    q.link(cinfo.outputs['Geometry'], cbox.inputs['Geometry'])
+    c_lo = q.node('ShaderNodeSeparateXYZ')
+    c_hi = q.node('ShaderNodeSeparateXYZ')
+    q.link(cbox.outputs['Min'], c_lo.inputs['Vector'])
+    q.link(cbox.outputs['Max'], c_hi.inputs['Vector'])
+    cable_len = q.math('SUBTRACT', c_hi.outputs['X'], c_lo.outputs['X'], 'Lunghezza cavo')
+    span = q.node('GeometryNodeCurveLength', 'Lunghezza nastro')
+    q.link(single.outputs['Curve'], span.inputs['Curve'])
+    end = q.node('GeometryNodeSampleCurve', 'Fine della striscia')
+    end.mode = 'LENGTH'
+    end.use_all_curves = True
+    q.link(single.outputs['Curve'], end.inputs['Curves'])
+    q.link(span.outputs['Length'], end.inputs['Length'])
+    end_xyz = q.node('ShaderNodeSeparateXYZ')
+    q.link(end.outputs['Position'], end_xyz.inputs['Vector'])
+    end_tan = q.vmath('NORMALIZE', end.outputs['Tangent'], label='Tangente finale')
+    end_rad = q.vmath('NORMALIZE', q.vec(end_xyz.outputs['X'], end_xyz.outputs['Y'], 0), label='Radiale finale')
+    radius0 = q.vmath('LENGTH', q.vec(end_xyz.outputs['X'], end_xyz.outputs['Y'], 0), label='Raggio finale')
+    drds = q.vmath('DOT_PRODUCT', end_tan, end_rad, 'Apertura')
+    spin = q.node('ShaderNodeSeparateXYZ')
+    q.link(q.vmath('CROSS_PRODUCT', end_rad, end_tan, 'Giro'), spin.inputs['Vector'])
+    omega = q.math('DIVIDE', spin.outputs['Z'], q.math('MAXIMUM', radius0, .001), 'Velocità angolare')
+    angle0 = q.math('ARCTAN2', end_xyz.outputs['Y'], end_xyz.outputs['X'], 'Angolo finale')
+    step = q.math('DIVIDE', q.node('GeometryNodeInputIndex').outputs['Index'], 127)
+    distance = q.math('MULTIPLY', step, cable_len, 'Distanza sul cavo')
+    angle = q.math('ADD', angle0, q.math('MULTIPLY', omega, distance))
+    radius = q.math('ADD', radius0, q.math('MULTIPLY', drds, distance))
+    tail = q.node('GeometryNodeMeshLine', 'Prolungamento')
+    tail.mode = 'OFFSET'
+    tail.inputs['Count'].default_value = 128
+    tail_pos = q.node('GeometryNodeSetPosition', 'Stessa tangente e apertura')
+    q.link(tail.outputs['Mesh'], tail_pos.inputs['Geometry'])
+    q.link(q.vec(q.math('MULTIPLY', radius, q.math('COSINE', angle)),
+                 q.math('MULTIPLY', radius, q.math('SINE', angle)),
+                 end_xyz.outputs['Z']), tail_pos.inputs['Position'])
+    tail_curve = q.node('GeometryNodeMeshToCurve', 'Curva del cavo')
+    tail_curve.mode = 'EDGES'
+    q.link(tail_pos.outputs['Geometry'], tail_curve.inputs['Mesh'])
+    origin = q.node('GeometryNodeSampleCurve', 'Capo del prolungamento')
+    origin.mode = 'FACTOR'
+    origin.use_all_curves = True
+    q.link(tail_curve.outputs['Curve'], origin.inputs['Curves'])
+    origin.inputs['Factor'].default_value = 0
+    turned = q.vmath('LENGTH', q.vmath('SUBTRACT', origin.outputs['Position'], end.outputs['Position']),
+                     label='Curva rovesciata')
+    tail_rev = q.node('GeometryNodeReverseCurve', 'Capo verso la striscia')
+    q.link(tail_curve.outputs['Curve'], tail_rev.inputs['Curve'])
+    q.link(q.math('GREATER_THAN', turned, .001), tail_rev.inputs['Selection'])
+    lead_pos = q.node('GeometryNodeInputPosition')
+    lead_xy = q.node('ShaderNodeSeparateXYZ')
+    q.link(lead_pos.outputs['Position'], lead_xy.inputs['Vector'])
+    lead_out = q.node('ShaderNodeVectorMath', 'Esterno sul cavo')
+    lead_out.operation = 'NORMALIZE'
+    q.link(q.vec(lead_xy.outputs['X'], lead_xy.outputs['Y'], 0), lead_out.inputs[0])
+    lead_normal = q.node('GeometryNodeSetCurveNormal', 'Normale del cavo')
+    q.link(tail_rev.outputs['Curve'], lead_normal.inputs['Curve'])
+    lead_normal.inputs['Mode'].default_value = 'Free'
+    q.link(lead_out.outputs['Vector'], lead_normal.inputs['Normal'])
+    cable_node = q.call(cable, '04 Cavo')
+    q.link(lead_normal.outputs['Curve'], cable_node.inputs['Curva'])
+    q.link(p['Cavo'], cable_node.inputs['Cavo'])
     reel_node = q.call(reel, '03 Bobina')
     for name in ('Flangia up', 'Flangia down', 'Raggio mozzo', 'Altezza bobina'):
         q.link(p[name], reel_node.inputs[name])
-    return q.finish(q.join(strip_node.outputs[0], reel_node.outputs[0]))
+    return q.finish(q.join(strip_node.outputs[0], reel_node.outputs[0], cable_node.outputs[0]))
 
 
 def set_input(modifier, name, value):
@@ -540,7 +698,7 @@ def setup_scene(name, group, values, floor_mat):
     scene.render.image_settings.file_format = 'PNG'
     scene.render.filepath = '//renders/' + name + '.png'
     scene.view_settings.view_transform = 'AgX'
-    scene['NOTE'] = 'Scegli bobina e PCB dalle cartelle. Quote in metri. Nessuna lunghezza commerciale garantita.'
+    scene['NOTE'] = 'Scegli bobina, PCB e cavo dalle cartelle. Quote in metri. Nessuna lunghezza commerciale garantita.'
     scene.view_layers[0].objects.active = obj
     obj.select_set(True, view_layer=scene.view_layers[0])
     return scene, obj
@@ -552,6 +710,7 @@ import os
 LIBRARY = 'LED Studio | Libreria'
 _bobina_items = [('NONE', 'Nessuna', 'Nessun file scelto')]
 _pcb_items = [('NONE', 'Nessuna', 'Nessun file scelto')]
+_cavo_items = [('NONE', 'Nessuno', 'Nessun file scelto')]
 
 
 def library_dir(kind):
@@ -573,6 +732,10 @@ def blend_items(kind, cache_name):
         global _bobina_items
         _bobina_items = items
         return _bobina_items
+    if cache_name == 'cavo':
+        global _cavo_items
+        _cavo_items = items
+        return _cavo_items
     global _pcb_items
     _pcb_items = items
     return _pcb_items
@@ -584,6 +747,10 @@ def bobina_items(self, context):
 
 def pcb_items(self, context):
     return blend_items('pcb', 'pcb')
+
+
+def cavo_items(self, context):
+    return blend_items('cavi', 'cavo')
 
 
 def modifier_of(obj):
@@ -686,14 +853,20 @@ def update_pcb(self, context):
     assign_library(self.id_data, 'pcb', self.pcb, {'Modulo PCB': stem})
 
 
+def update_cavo(self, context):
+    stem = self.cavo[:-6] if self.cavo.lower().endswith('.blend') else self.cavo
+    assign_library(self.id_data, 'cavi', self.cavo, {'Cavo': stem})
+
+
 class LEDStudioSettings(bpy.types.PropertyGroup):
     bobina: bpy.props.EnumProperty(name='Bobina', items=bobina_items, update=update_bobina)
     pcb: bpy.props.EnumProperty(name='PCB', items=pcb_items, update=update_pcb)
+    cavo: bpy.props.EnumProperty(name='Cavo', items=cavo_items, update=update_cavo)
     status: bpy.props.StringProperty(name='Stato', default='')
 
 
 class LED_PT_library(bpy.types.Panel):
-    bl_label = 'Libreria bobine e PCB'
+    bl_label = 'Libreria bobine, PCB e cavi'
     bl_idname = 'LED_PT_library'
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
@@ -709,11 +882,13 @@ class LED_PT_library(bpy.types.Panel):
         settings = context.object.led_studio
         layout.prop(settings, 'bobina')
         layout.prop(settings, 'pcb')
+        layout.prop(settings, 'cavo')
         if settings.status:
             layout.label(text=settings.status, icon='ERROR')
         root = bpy.path.abspath('//')
-        if not os.path.isdir(os.path.join(root, 'bobine')) or not os.path.isdir(os.path.join(root, 'pcb')):
-            layout.label(text='Crea le cartelle bobine e pcb accanto al file.')
+        missing = [name for name in ('bobine', 'pcb', 'cavi') if not os.path.isdir(os.path.join(root, name))]
+        if missing:
+            layout.label(text='Crea accanto al file: ' + ', '.join(missing) + '.')
 
 
 def register():
@@ -743,7 +918,7 @@ README = '''LED STUDIO — PARTENZA RAPIDA
 Blender 5.3. Tre scene, dal menu Scene in alto: 8 mm, 10 mm, RGB 12 mm.
 Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
 
-1. Le cartelle bobine e pcb stanno accanto a questo file.
+1. Le cartelle bobine, pcb e cavi stanno accanto a questo file.
 2. In bobine metti un .blend per modello. Dentro, due mesh chiamate up e down,
    origine al centro della bobina, asse Z, transform applicati, materiali già assegnati.
    up sta dal lato Z positivo, down dal lato negativo.
@@ -752,11 +927,15 @@ Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
    X è il passo lungo il nastro, Z è la larghezza, il lato LED guarda verso -Y.
    Il modulo viene ripetuto così com'è: ogni vertice segue la curva, quindi
    basetta e LED restano quelli del file, senza giunzione fra una copia e la successiva.
-4. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
+4. In cavi metti un .blend per cavo. L'oggetto mesh ha il nome del file
+   senza estensione. X è la lunghezza: il capo a X minimo si attacca alla
+   striscia, il connettore sta verso X massimo. La sezione sta in Y e Z,
+   il lato -Y guarda fuori dal mozzo. Non si ripete: la misura X è il tratto.
+5. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
    oppure esegui una volta il testo LED Studio Libreria.
-   Nel modificatore Configurazione prodotto scegli Bobina e poi PCB.
-5. Regola Altezza bobina, i raggi, il passo radiale e l'uscita.
-6. F12 per il render; tastierino 0 per la camera.
+   Nel modificatore Configurazione prodotto scegli Bobina, PCB e poi Cavo.
+6. Regola Altezza bobina, i raggi, il passo radiale e l'uscita.
+7. F12 per il render; tastierino 0 per la camera.
 
 Le flange non si scalano: si allontanano fino alla luce richiesta.
 Il cilindro fra le due prende il primo materiale di up.
@@ -766,6 +945,7 @@ resta come margine, centrato fra le flange.
 Il nastro è continuo: il livello dispari torna indietro e un raccordo verticale
 sale di una larghezza. L'uscita è disegnata solo se il nastro finisce all'esterno,
 cioè con un numero dispari di livelli.
+Il cavo parte da quel punto e ne segue la curva, con la stessa tangente.
 
 QUOTE in metri: 0.008 = 8 mm.
 Mantieni Raggio mozzo < Raggio avvolgimento, e il raggio di avvolgimento
@@ -773,7 +953,7 @@ dentro la flangia vera. Un avvolgimento troppo fitto può intersecare i componen
 Non interpreta una lunghezza commerciale esatta: è un avvolgimento illustrativo.
 
 Gruppi: 00 Prodotto completo; 01 Percorso spirale e uscita;
-02 PCB e componenti su curva; 03 Bobina parametrica.
+02 PCB e componenti su curva; 03 Bobina parametrica; 04 Cavo su curva.
 
 IMPORTAZIONE: File > Append > LED_Studio.blend > Collection > Prodotto | ...
 Il pannello legge le cartelle accanto al file in cui lavori.
@@ -827,6 +1007,41 @@ def make_pcb_piece(name, material):
             verts.append((cx + x, cy + y, cz + z))
         for face in [(0, 1, 2, 3), (4, 7, 6, 5), (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 4, 0)]:
             faces.append(tuple(start + i for i in face))
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(verts, [], faces)
+    mesh.materials.append(material)
+    mesh.update()
+    return bpy.data.objects.new(name, mesh)
+
+
+def make_cable(name, material):
+    """An 8 cm tube along X, plus a connector at the far end."""
+    segs = 16
+    length = .08
+    radius = .0015
+    verts = []
+    for station in (0, .02, .04, .06, length):
+        for i in range(segs):
+            ang = 2 * math.pi * i / segs
+            verts.append((station, radius * math.cos(ang), radius * math.sin(ang)))
+    faces = []
+    rings = 5
+    for ring in range(rings - 1):
+        for i in range(segs):
+            nxt = (i + 1) % segs
+            a = ring * segs + i
+            b = ring * segs + nxt
+            c = a + segs
+            d = b + segs
+            faces.append((a, c, d, b))
+    hx, hy, hz = .006, .002, .002
+    cx = length + hx
+    start = len(verts)
+    for x, y, z in [(-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz),
+                    (-hx, -hy, hz), (hx, -hy, hz), (hx, hy, hz), (-hx, hy, hz)]:
+        verts.append((cx + x, y, z))
+    for face in [(0, 1, 2, 3), (4, 7, 6, 5), (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 4, 0)]:
+        faces.append(tuple(start + i for i in face))
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(verts, [], faces)
     mesh.materials.append(material)
@@ -951,6 +1166,72 @@ def analyze_strip(obj):
     return report
 
 
+def check_cable(obj, mat_name):
+    """The lead starts on the strip end, follows its tangent, and bends outward."""
+    bpy.context.view_layer.update()
+    deps = bpy.context.evaluated_depsgraph_get()
+    ev = obj.evaluated_get(deps)
+    mesh = ev.to_mesh()
+    cable = []
+    used = set()
+    for poly in mesh.polygons:
+        slot = mesh.materials[poly.material_index] if poly.material_index < len(mesh.materials) else None
+        if slot is None or mat_name not in slot.name:
+            continue
+        for index in poly.vertices:
+            if index not in used:
+                used.add(index)
+                cable.append(mesh.vertices[index].co.copy())
+    strip = [v.co.copy() for i, v in enumerate(mesh.vertices)
+             if i not in used and abs(v.co.z) < .0045 and math.hypot(v.co.x, v.co.y) > .03]
+    ev.to_mesh_clear()
+    if len(cable) < 8 or len(strip) < 8:
+        raise RuntimeError('Il cavo non è in scena')
+    tip = max(math.hypot(v.x, v.y) for v in strip)
+    inner = min(cable, key=lambda v: math.hypot(v.x, v.y))
+    ring = [v for v in cable if (v - inner).length < .0032]
+    if len(ring) < 8:
+        raise RuntimeError('Il cavo non ha il capo di attacco')
+    start = sum(ring, Vector()) / len(ring)
+    closest = sorted(strip, key=lambda v: (v - start).length)[:4]
+    end = sum(closest, Vector()) / len(closest)
+    gap = (start - end).length
+    # The test module only has vertices at the ends of its 4 mm pitch, so the
+    # mesh can stop a couple of millimetres before the curve end. A real PCB,
+    # with vertices all along X, meets the cable.
+    if gap > .0025:
+        raise RuntimeError('Attacco del cavo staccato: %.4f m' % gap)
+    ahead = [v for v in cable if .008 < (v - start).length < .02]
+    before = [v for v in strip if .006 < (v - end).length < .015 and math.hypot(v.x, v.y) < math.hypot(end.x, end.y) + .001]
+    if len(ahead) < 4 or not before:
+        raise RuntimeError('Manca il tratto fra striscia e cavo')
+    prev = sum(before, Vector()) / len(before)
+    mid = sum(ahead, Vector()) / len(ahead)
+    align = (end - prev).normalized().dot((mid - start).normalized())
+    if align < .95:
+        raise RuntimeError('Il cavo non segue la tangente della striscia: %.3f' % align)
+    far = max(math.hypot(v.x, v.y) for v in cable)
+    if far < tip + .005:
+        raise RuntimeError('Il cavo non esce oltre la striscia')
+    outer_pts = [v for v in cable if math.hypot(v.x, v.y) > far - .003]
+    outer = sum(outer_pts, Vector()) / len(outer_pts)
+    chord = outer - start
+    span = chord.length
+    half = []
+    for v in cable:
+        t = (v - start).dot(chord) / (span * span)
+        if .4 < t < .6:
+            half.append(v)
+    if not half:
+        raise RuntimeError('Il cavo non ha un tratto centrale')
+    center = sum(half, Vector()) / len(half)
+    closest = start + chord * ((center - start).dot(chord) / (span * span))
+    bow = (center - closest).length
+    print('LED_CHECK cavo gap', round(gap, 5), 'far', round(far - tip, 4), 'bow', round(bow, 4))
+    if bow < .001:
+        raise RuntimeError('Il cavo è diritto, non segue la curva')
+
+
 def exercise_library(scene, obj, values):
     """Link a temporary coil and PCB the way the panel does, then remove them."""
     panel = load_panel()
@@ -959,17 +1240,22 @@ def exercise_library(scene, obj, values):
     bpy.ops.wm.save_as_mainfile(filepath=host)
     os.makedirs(os.path.join(temp, 'bobine'))
     os.makedirs(os.path.join(temp, 'pcb'))
+    os.makedirs(os.path.join(temp, 'cavi'))
     mat = make_material('test mozzo', (.2, .45, .8), 0, .4)
     pcb_mat = make_material('test base pcb', (.9, .9, .85), 0, .4)
+    cable_mat = make_material('test cavo', (.95, .95, .95), 0, .35)
     up = make_box('up', (.2, .2, .002), (0, 0, .005))
     down = make_box('down', (.2, .2, .002), (0, 0, -.005))
     pcb = make_pcb_piece('FN01234', pcb_mat)
+    cable = make_cable('cavo bianco', cable_mat)
     up.data.materials.append(mat)
     bobina_path = os.path.join(temp, 'bobine', 'bobina bianca.blend')
     pcb_path = os.path.join(temp, 'pcb', 'FN01234.blend')
+    cable_path = os.path.join(temp, 'cavi', 'cavo bianco.blend')
     bpy.data.libraries.write(bobina_path, {up, up.data, down, down.data, mat}, fake_user=True)
     bpy.data.libraries.write(pcb_path, {pcb, pcb.data, pcb_mat}, fake_user=True)
-    for piece in (up, down, pcb):
+    bpy.data.libraries.write(cable_path, {cable, cable.data, cable_mat}, fake_user=True)
+    for piece in (up, down, pcb, cable):
         data = piece.data
         bpy.data.objects.remove(piece, do_unlink=True)
         if data.users == 0:
@@ -1010,11 +1296,19 @@ def exercise_library(scene, obj, values):
         span = report['base_span']
         if not span or span[1] - span[0] < .007:
             raise RuntimeError('La larghezza della basetta non è verticale')
+        if 'cavo bianco.blend' not in [item[0] for item in panel['cavo_items'](None, None)]:
+            raise RuntimeError('Il menu Cavo non elenca il file di prova')
+        obj.led_studio.cavo = 'cavo bianco.blend'
+        if obj.led_studio.status:
+            raise RuntimeError(obj.led_studio.status)
+        check_cable(obj, 'test cavo')
     finally:
         if obj.led_studio.bobina != 'NONE':
             obj.led_studio.bobina = 'NONE'
         if obj.led_studio.pcb != 'NONE':
             obj.led_studio.pcb = 'NONE'
+        if obj.led_studio.cavo != 'NONE':
+            obj.led_studio.cavo = 'NONE'
         for piece in list(bpy.data.objects):
             if piece.library:
                 bpy.data.objects.remove(piece, do_unlink=True)
@@ -1024,7 +1318,7 @@ def exercise_library(scene, obj, values):
                     collection.remove(block)
         for lib in list(bpy.data.libraries):
             bpy.data.libraries.remove(lib)
-        for name in ('test mozzo', 'test base pcb'):
+        for name in ('test mozzo', 'test base pcb', 'test cavo'):
             local = bpy.data.materials.get(PREFIX + ' | ' + name)
             if local and local.users == 0:
                 bpy.data.materials.remove(local)
@@ -1046,7 +1340,8 @@ def main():
     path = build_path()
     strip = build_strip()
     reel = build_reel()
-    master = build_master(path, strip, reel)
+    cable = build_cable()
+    master = build_master(path, strip, reel, cable)
     built = [setup_scene(name, master, vals, floor) for name, vals in PRESETS]
     replace_text('LEGGIMI - LED Studio', README)
     replace_text('LED Studio Libreria', PANEL_SOURCE, module=True)
@@ -1079,7 +1374,7 @@ def main():
         if '--output' in args:
             target = os.path.abspath(args[args.index('--output') + 1])
             bpy.ops.wm.save_as_mainfile(filepath=target)
-    print('LED Studio: pronto. Tre preset, quattro gruppi, pannello libreria.')
+    print('LED Studio: pronto. Tre preset, cinque gruppi, pannello libreria.')
 
 
 if __name__ == '__main__':

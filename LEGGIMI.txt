@@ -3,7 +3,7 @@ LED STUDIO — PARTENZA RAPIDA
 Blender 5.3. Tre scene, dal menu Scene in alto: 8 mm, 10 mm, RGB 12 mm.
 Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
 
-1. Le cartelle bobine e pcb stanno accanto a questo file.
+1. Le cartelle bobine, pcb e cavi stanno accanto a questo file.
 2. In bobine metti un .blend per modello. Dentro, due mesh chiamate up e down,
    origine al centro della bobina, asse Z, transform applicati, materiali già assegnati.
    up sta dal lato Z positivo, down dal lato negativo.
@@ -12,11 +12,15 @@ Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
    X è il passo lungo il nastro, Z è la larghezza, il lato LED guarda verso -Y.
    Il modulo viene ripetuto così com'è: ogni vertice segue la curva, quindi
    basetta e LED restano quelli del file, senza giunzione fra una copia e la successiva.
-4. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
+4. In cavi metti un .blend per cavo. L'oggetto mesh ha il nome del file
+   senza estensione. X è la lunghezza: il capo a X minimo si attacca alla
+   striscia, il connettore sta verso X massimo. La sezione sta in Y e Z,
+   il lato -Y guarda fuori dal mozzo. Non si ripete: la misura X è il tratto.
+5. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
    oppure esegui una volta il testo LED Studio Libreria.
-   Nel modificatore Configurazione prodotto scegli Bobina e poi PCB.
-5. Regola Altezza bobina, i raggi, il passo radiale e l'uscita.
-6. F12 per il render; tastierino 0 per la camera.
+   Nel modificatore Configurazione prodotto scegli Bobina, PCB e poi Cavo.
+6. Regola Altezza bobina, i raggi, il passo radiale e l'uscita.
+7. F12 per il render; tastierino 0 per la camera.
 
 Le flange non si scalano: si allontanano fino alla luce richiesta.
 Il cilindro fra le due prende il primo materiale di up.
@@ -26,6 +30,7 @@ resta come margine, centrato fra le flange.
 Il nastro è continuo: il livello dispari torna indietro e un raccordo verticale
 sale di una larghezza. L'uscita è disegnata solo se il nastro finisce all'esterno,
 cioè con un numero dispari di livelli.
+Il cavo parte da quel punto e ne segue la curva, con la stessa tangente.
 
 QUOTE in metri: 0.008 = 8 mm.
 Mantieni Raggio mozzo < Raggio avvolgimento, e il raggio di avvolgimento
@@ -33,7 +38,7 @@ dentro la flangia vera. Un avvolgimento troppo fitto può intersecare i componen
 Non interpreta una lunghezza commerciale esatta: è un avvolgimento illustrativo.
 
 Gruppi: 00 Prodotto completo; 01 Percorso spirale e uscita;
-02 PCB e componenti su curva; 03 Bobina parametrica.
+02 PCB e componenti su curva; 03 Bobina parametrica; 04 Cavo su curva.
 
 IMPORTAZIONE: File > Append > LED_Studio.blend > Collection > Prodotto | ...
 Il pannello legge le cartelle accanto al file in cui lavori.
