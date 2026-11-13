@@ -1,17 +1,17 @@
 # Graph Report - LED_Studio_Starter  (2026-11-13)
 
 ## Corpus Check
-- 4 files · ~29,674 words
+- 4 files · ~31,344 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 6 file(s) not represented in the graph (top: (none) 4, .mdc 1, .blend 1)
 
 ## Summary
-- 166 nodes · 342 edges · 7 communities (6 shown, 1 thin omitted)
-- Extraction: 71% EXTRACTED · 28% INFERRED · 1% AMBIGUOUS · INFERRED: 95 edges (avg confidence: 0.85)
+- 171 nodes · 348 edges · 7 communities (6 shown, 1 thin omitted)
+- Extraction: 72% EXTRACTED · 27% INFERRED · 1% AMBIGUOUS · INFERRED: 93 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `53b91327`
+- Built from commit: `ba8826ee`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -29,7 +29,7 @@
 2. `build_master()` - 17 edges
 3. `Cinque indicazioni operative` - 16 edges
 4. `build_strip()` - 13 edges
-5. `build_cable()` - 12 edges
+5. `build_cable()` - 13 edges
 6. `SCAMPER` - 12 edges
 7. `build_reel()` - 11 edges
 8. `exercise_library()` - 11 edges
@@ -39,14 +39,14 @@
 ## Surprising Connections (you probably didn't know these)
 - `Modificatore Configurazione prodotto` --semantically_similar_to--> `Pannello di preset e controlli`  [INFERRED] [semantically similar]
   LEGGIMI.txt → brainstorming-report.md
-- `Sistema quote in metri` --semantically_similar_to--> `Modalità di avvolgimento`  [INFERRED] [semantically similar]
-  LEGGIMI.txt → brainstorming-report.md
-- `Blocchi package, fosforo, resistenza e contatti` --semantically_similar_to--> `Componenti rigidi su supporto flessibile`  [INFERRED] [semantically similar]
-  LEGGIMI.txt → brainstorming-report.md
 - `Arrotondamento dei giri interni` --semantically_similar_to--> `Campionamento del passo commerciale`  [INFERRED] [semantically similar]
   LEGGIMI.txt → brainstorming-report.md
 - `Gruppi condivisi fra le scene` --semantically_similar_to--> `Preset PCB condiviso fra le viste`  [INFERRED] [semantically similar]
   LEGGIMI.txt → brainstorming-report.md
+- `Gioco flange` --semantically_similar_to--> `Spazio fra flange legato alla larghezza`  [INFERRED] [semantically similar]
+  LEGGIMI.txt → brainstorming-report.md
+- `Append Prodotto | 02_Caldo_10mm` --conceptually_related_to--> `02 PCB e componenti su curva`  [AMBIGUOUS]
+  VERIFICA.txt → LEGGIMI.txt
 
 ## Import Cycles
 - None detected.
@@ -60,24 +60,24 @@
 ## Communities (7 total, 1 thin omitted)
 
 ### Community 1 - "Blender Builder Script"
-Cohesion: 0.20
+Cohesion: 0.19
 Nodes (8): build_cable(), build_master(), build_path(), build_reel(), build_strip(), Graph, main(), realize_collection()
 
 ### Community 2 - "Spirale planare di avvolgimento"
-Cohesion: 0.09
-Nodes (19): BMAD Quick Flow, Componenti rigidi su supporto flessibile, Blender Manual Curve Spiral, Blender Manual Curve to Mesh, Blender Manual Curve to Points, Fonti tecniche, Immagine di riferimento della composizione, Incognite di contesto (+11 more)
+Cohesion: 0.08
+Nodes (22): BMAD Quick Flow, Blender Manual Command Line, Componenti rigidi su supporto flessibile, Blender Manual Curve Spiral, Blender Manual Curve to Mesh, Blender Manual Curve to Points, Fonti tecniche, Immagine di riferimento della composizione (+14 more)
 
 ### Community 3 - "Product Controls"
-Cohesion: 0.12
-Nodes (17): Modello di bobina per famiglia, Append collezione Prodotto, Blocchi package, fosforo, resistenza e contatti, Modificatore Configurazione prodotto, Gioco flange, 00 Prodotto completo, 02 PCB e componenti su curva, 03 Bobina parametrica (+9 more)
+Cohesion: 0.15
+Nodes (14): Append collezione Prodotto, Modificatore Configurazione prodotto, Gioco flange, 00 Prodotto completo, 03 Bobina parametrica, Preset scena 10 mm, Preset scena 8 mm, Preset scena RGB 12 mm (+6 more)
 
 ### Community 4 - "Graph Bootstrap Docs"
 Cohesion: 0.29
 Nodes (11): ensure-bootstrap.ps1, generate-readme.ps1, Git commit 402e0c6, graph.json, GRAPH_REPORT.md, graphify, Knowledge Graph, LedStudioStarter (+3 more)
 
 ### Community 5 - "led_starter.py"
-Cohesion: 0.09
-Nodes (13): analyze_strip(), check_cable(), exercise_library(), load_panel(), look_at(), make_box(), make_cable(), make_material() (+5 more)
+Cohesion: 0.07
+Nodes (16): analyze_strip(), place(), check_cable(), curve_frame(), densify_tubes(), exercise_library(), load_panel(), look_at() (+8 more)
 
 ### Community 6 - "LED Reel Render"
 Cohesion: 0.32
@@ -95,22 +95,22 @@ Nodes (7): Dark SMD Marks on Strip, Coiled White LED Strip, LED Strip Reel Produ
 
 ## Knowledge Gaps
 - **4 isolated node(s):** `BMAD Quick Flow`, `Render Cycles del preset 10 mm`, `Git commit 402e0c6`, `Flanged Six-Spoke Plastic Reel`
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 38 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 40 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **1 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Geometry Nodes con add-on Python` connect `Catalog Design Ideas` to `led_starter.py`?**
-  _High betweenness centrality (0.198) - this node is a cross-community bridge._
+  _High betweenness centrality (0.202) - this node is a cross-community bridge._
 - **Are the 12 inferred relationships involving `build_master()` (e.g. with `.call()` and `.compare()`) actually correct?**
   _`build_master()` has 12 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `BMAD Quick Flow`, `Render Cycles del preset 10 mm`, `Git commit 402e0c6` to the rest of the system?**
   _4 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Catalog Design Ideas` be split into smaller, more focused modules?**
-  _Cohesion score 0.13230769230769232 - nodes in this community are weakly interconnected._
-- **Why does `Cinque indicazioni operative` connect `Catalog Design Ideas` to `Spirale planare di avvolgimento`, `Product Controls`?**
-  _High betweenness centrality (0.101) - this node is a cross-community bridge._
+  _Cohesion score 0.13333333333333333 - nodes in this community are weakly interconnected._
+- **Why does `Cinque indicazioni operative` connect `Catalog Design Ideas` to `Spirale planare di avvolgimento`?**
+  _High betweenness centrality (0.099) - this node is a cross-community bridge._
 
 ### Low-confidence Hints
 _AMBIGUOUS edges — the extractor was unsure. Verify before acting on these._

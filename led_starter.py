@@ -177,6 +177,29 @@ def build_path():
     return q.finish(cv.outputs['Curve'])
 
 
+def curve_frame(q, sample):
+    """Shared orthonormal frame for strip and cable: X along tangent, -Y outward, Z up."""
+    tangent = q.vmath('NORMALIZE', sample.outputs['Tangent'], label='Tangente')
+    sampled = q.node('ShaderNodeSeparateXYZ')
+    q.link(sample.outputs['Position'], sampled.inputs['Vector'])
+    radial = q.vmath('NORMALIZE', q.vec(sampled.outputs['X'], sampled.outputs['Y'], 0), label='Radiale')
+    # Keep the sampled normal pointing away from the hub, then perpendicular to the tangent.
+    outward = q.math('LESS_THAN', q.vmath('DOT_PRODUCT', sample.outputs['Normal'], radial), 0)
+    normal = q.vmath('SCALE', sample.outputs['Normal'], q.math('SUBTRACT', 1, q.math('MULTIPLY', outward, 2)))
+    normal = q.vmath('SUBTRACT', normal, q.vmath('SCALE', tangent, q.vmath('DOT_PRODUCT', normal, tangent)))
+    normal = q.vmath('NORMALIZE', normal, label='Normale esterna')
+    binormal = q.vmath('CROSS_PRODUCT', normal, tangent, 'Binormale')
+    b_xyz = q.node('ShaderNodeSeparateXYZ')
+    t_xyz = q.node('ShaderNodeSeparateXYZ')
+    q.link(binormal, b_xyz.inputs['Vector'])
+    q.link(tangent, t_xyz.inputs['Vector'])
+    # On a reversed layer the binormal points down. Flip it back while the path is horizontal.
+    flip_b = q.math('MINIMUM', q.math('LESS_THAN', q.math('ABSOLUTE', t_xyz.outputs['Z']), .5),
+                    q.math('LESS_THAN', b_xyz.outputs['Z'], 0))
+    binormal = q.vmath('SCALE', binormal, q.math('SUBTRACT', 1, q.math('MULTIPLY', flip_b, 2)), 'Binormale in su')
+    return tangent, normal, binormal
+
+
 def build_strip():
     """Repeat the modeled module along the curve, one vertex at a time."""
     q = Graph('LED | 02 PCB e componenti su curva')
@@ -253,8 +276,8 @@ def build_strip():
     length = q.node('GeometryNodeCurveLength')
     q.link(p['Curva'], length.inputs['Curve'])
     safe = q.math('MAXIMUM', p['Passo'], .0000001)
-    raw_count = q.node('FunctionNodeFloatToInt', 'Copie lungo la curva')
-    raw_count.rounding_mode = 'CEILING'
+    raw_count = q.node('FunctionNodeFloatToInt', 'Copie intere')
+    raw_count.rounding_mode = 'FLOOR'
     q.link(q.math('DIVIDE', length.outputs['Length'], safe), raw_count.inputs['Float'])
     count = q.node('GeometryNodeSwitch', 'Nessuna copia senza PCB')
     count.input_type = 'INT'
@@ -286,39 +309,35 @@ def build_strip():
     sample.use_all_curves = True
     q.link(p['Curva'], sample.inputs['Curves'])
     q.link(arc, sample.inputs['Length'])
-    tangent = q.vmath('NORMALIZE', sample.outputs['Tangent'], label='Tangente')
-    sampled = q.node('ShaderNodeSeparateXYZ')
-    q.link(sample.outputs['Position'], sampled.inputs['Vector'])
-    radial = q.vmath('NORMALIZE', q.vec(sampled.outputs['X'], sampled.outputs['Y'], 0), label='Radiale')
-    # Keep the sampled normal pointing away from the hub, then perpendicular to the tangent.
-    outward = q.math('LESS_THAN', q.vmath('DOT_PRODUCT', sample.outputs['Normal'], radial), 0)
-    normal = q.vmath('SCALE', sample.outputs['Normal'], q.math('SUBTRACT', 1, q.math('MULTIPLY', outward, 2)))
-    normal = q.vmath('SUBTRACT', normal, q.vmath('SCALE', tangent, q.vmath('DOT_PRODUCT', normal, tangent)))
-    normal = q.vmath('NORMALIZE', normal, label='Normale esterna')
-    binormal = q.vmath('CROSS_PRODUCT', normal, tangent, 'Binormale')
-    b_xyz = q.node('ShaderNodeSeparateXYZ')
-    t_xyz = q.node('ShaderNodeSeparateXYZ')
-    q.link(binormal, b_xyz.inputs['Vector'])
-    q.link(tangent, t_xyz.inputs['Vector'])
-    # On a reversed layer the binormal points down. Flip it back while the path is horizontal.
-    flip_b = q.math('MINIMUM', q.math('LESS_THAN', q.math('ABSOLUTE', t_xyz.outputs['Z']), .5),
-                    q.math('LESS_THAN', b_xyz.outputs['Z'], 0))
-    binormal = q.vmath('SCALE', binormal, q.math('SUBTRACT', 1, q.math('MULTIPLY', flip_b, 2)), 'Binormale in su')
+    tangent, normal, binormal = curve_frame(q, sample)
     y_rel = q.math('SUBTRACT', orig.outputs['Y'], center_y)
     z_rel = q.math('SUBTRACT', orig.outputs['Z'], center_z)
     moved = q.vmath('ADD', sample.outputs['Position'], q.vmath(
         'ADD', q.vmath('SCALE', normal, q.math('MULTIPLY', y_rel, -1), '-Y verso l\'esterno'),
         q.vmath('SCALE', binormal, z_rel, 'Z in verticale')))
+    arc_store = q.node('GeometryNodeStoreNamedAttribute', 'Arco')
+    arc_store.data_type = 'FLOAT'
+    arc_store.domain = 'POINT'
+    arc_store.inputs['Name'].default_value = 'arco'
+    q.link(realize.outputs['Geometry'], arc_store.inputs['Geometry'])
+    q.link(arc, arc_store.inputs['Value'])
+    flag = q.node('GeometryNodeStoreNamedAttribute', 'Nastro')
+    flag.data_type = 'FLOAT'
+    flag.domain = 'POINT'
+    flag.inputs['Name'].default_value = 'nastro'
+    flag.inputs['Value'].default_value = 1.0
+    q.link(arc_store.outputs['Geometry'], flag.inputs['Geometry'])
+    tan_store = q.node('GeometryNodeStoreNamedAttribute', 'Tangente nastro')
+    tan_store.data_type = 'FLOAT_VECTOR'
+    tan_store.domain = 'POINT'
+    tan_store.inputs['Name'].default_value = 'tangente'
+    q.link(flag.outputs['Geometry'], tan_store.inputs['Geometry'])
+    q.link(tangent, tan_store.inputs['Value'])
     placed = q.node('GeometryNodeSetPosition', 'Vertici sul percorso')
-    q.link(realize.outputs['Geometry'], placed.inputs['Geometry'])
+    q.link(tan_store.outputs['Geometry'], placed.inputs['Geometry'])
     q.link(moved, placed.inputs['Position'])
-    cut = q.node('GeometryNodeDeleteGeometry', 'Oltre la fine')
-    cut.domain = 'POINT'
-    cut.mode = 'ALL'
-    q.link(placed.outputs['Geometry'], cut.inputs['Geometry'])
-    q.link(q.math('GREATER_THAN', arc, q.math('ADD', length.outputs['Length'], .00001)), cut.inputs['Selection'])
     weld = q.node('GeometryNodeMergeByDistance', 'Salda le giunzioni')
-    q.link(cut.outputs['Geometry'], weld.inputs['Geometry'])
+    q.link(placed.outputs['Geometry'], weld.inputs['Geometry'])
     weld.inputs['Mode'].default_value = 'All'
     weld.inputs['Distance'].default_value = .00001
     out = q.node('GeometryNodeSwitch', 'Solo con un PCB scelto')
@@ -328,50 +347,237 @@ def build_strip():
     return q.finish(out.outputs['Output'])
 
 
-def realize_collection(q, collection, label):
+def realize_collection(q, collection, label, with_piece_id=False):
     """Every object in the collection, at the position it was given, as real vertices."""
     info = q.node('GeometryNodeCollectionInfo', label)
     info.transform_space = 'ORIGINAL'
     info.inputs['Separate Children'].default_value = True
     info.inputs['Reset Children'].default_value = False
     q.link(collection, info.inputs['Collection'])
+    instances = info.outputs['Instances']
+    if with_piece_id:
+        piece = q.node('GeometryNodeStoreNamedAttribute', label + ' id')
+        piece.data_type = 'INT'
+        piece.domain = 'INSTANCE'
+        piece.inputs['Name'].default_value = 'pezzo'
+        q.link(instances, piece.inputs['Geometry'])
+        q.link(q.node('GeometryNodeInputIndex').outputs['Index'], piece.inputs['Value'])
+        instances = piece.outputs['Geometry']
     real = q.node('GeometryNodeRealizeInstances', label + ' reali')
     real.inputs['Realize All'].default_value = True
-    q.link(info.outputs['Instances'], real.inputs['Geometry'])
+    q.link(instances, real.inputs['Geometry'])
     return real.outputs['Geometry']
+
+
+def densify_tubes(q, geo, step):
+    """Rebuild a two-ring tube with skinned quad rings every `step`, keeping circle count, caps and material."""
+    island = q.node('GeometryNodeInputMeshIsland')
+    counted = q.node('GeometryNodeAttributeStatistic', 'Isole del cavo')
+    counted.data_type = 'FLOAT'
+    counted.domain = 'POINT'
+    q.link(geo, counted.inputs['Geometry'])
+    q.link(island.outputs['Island Index'], counted.inputs['Attribute'])
+    total_pts = q.node('GeometryNodeAttributeDomainSize', 'Punti flessibili')
+    total_pts.component = 'MESH'
+    q.link(geo, total_pts.inputs['Geometry'])
+    has_pts = q.math('GREATER_THAN', total_pts.outputs['Point Count'], 0)
+    how_many = q.node('FunctionNodeFloatToInt', 'Quante isole')
+    how_many.rounding_mode = 'FLOOR'
+    q.link(q.math('MULTIPLY', q.math('ADD', counted.outputs['Max'], 1), has_pts), how_many.inputs['Float'])
+    enter, leave = q.repeat('Isole guaina')
+    q.link(how_many.outputs['Integer'], enter.inputs['Iterations'])
+    part = q.node('GeometryNodeSeparateGeometry', 'Isola')
+    part.domain = 'POINT'
+    q.link(geo, part.inputs['Geometry'])
+    q.link(q.compare(island.outputs['Island Index'], enter.outputs['Iteration']), part.inputs['Selection'])
+    box = q.node('GeometryNodeBoundBox', 'Ingombro isola')
+    q.link(part.outputs['Selection'], box.inputs['Geometry'])
+    lo = q.node('ShaderNodeSeparateXYZ')
+    hi = q.node('ShaderNodeSeparateXYZ')
+    q.link(box.outputs['Min'], lo.inputs['Vector'])
+    q.link(box.outputs['Max'], hi.inputs['Vector'])
+    span = q.math('SUBTRACT', hi.outputs['X'], lo.outputs['X'])
+    here = q.node('ShaderNodeSeparateXYZ')
+    q.link(q.node('GeometryNodeInputPosition').outputs['Position'], here.inputs['Vector'])
+    at_lo = q.math('LESS_THAN', here.outputs['X'], q.math('ADD', lo.outputs['X'], .00005))
+    at_hi = q.math('GREATER_THAN', here.outputs['X'], q.math('SUBTRACT', hi.outputs['X'], .00005))
+    ring = q.node('GeometryNodeSeparateGeometry', 'Anello iniziale')
+    ring.domain = 'POINT'
+    q.link(part.outputs['Selection'], ring.inputs['Geometry'])
+    q.link(at_lo, ring.inputs['Selection'])
+    far = q.node('GeometryNodeSeparateGeometry', 'Anello finale')
+    far.domain = 'POINT'
+    q.link(part.outputs['Selection'], far.inputs['Geometry'])
+    q.link(at_hi, far.inputs['Selection'])
+    n_all = q.node('GeometryNodeAttributeDomainSize', 'Vertici isola')
+    n_all.component = 'MESH'
+    q.link(part.outputs['Selection'], n_all.inputs['Geometry'])
+    n_lo = q.node('GeometryNodeAttributeDomainSize', 'Vertici anello')
+    n_lo.component = 'MESH'
+    q.link(ring.outputs['Selection'], n_lo.inputs['Geometry'])
+    n_hi = q.node('GeometryNodeAttributeDomainSize', 'Vertici anello opposto')
+    n_hi.component = 'MESH'
+    q.link(far.outputs['Selection'], n_hi.inputs['Geometry'])
+    is_tube = q.math('MINIMUM', q.math('GREATER_THAN', n_lo.outputs['Point Count'], 2), q.math('MINIMUM',
+                     q.compare(n_lo.outputs['Point Count'], n_hi.outputs['Point Count'], .1),
+                     q.math('MINIMUM', q.compare(n_all.outputs['Point Count'],
+                                                 q.math('MULTIPLY', n_lo.outputs['Point Count'], 2), .1),
+                            q.math('GREATER_THAN', span, q.math('MULTIPLY', step, 1.5)))))
+    no_faces = q.node('GeometryNodeDeleteGeometry', 'Solo bordo')
+    no_faces.domain = 'FACE'
+    no_faces.mode = 'ONLY_FACE'
+    q.link(ring.outputs['Selection'], no_faces.inputs['Geometry'])
+    rim_init = q.node('GeometryNodeStoreNamedAttribute', 'Bordo iniziale')
+    rim_init.data_type = 'BOOLEAN'
+    rim_init.domain = 'EDGE'
+    rim_init.inputs['Name'].default_value = 'bordo'
+    rim_init.inputs['Value'].default_value = True
+    q.link(no_faces.outputs['Geometry'], rim_init.inputs['Geometry'])
+    gaps = q.node('FunctionNodeFloatToInt', 'Anelli da inserire')
+    gaps.rounding_mode = 'ROUND'
+    q.link(q.math('DIVIDE', span, q.math('MAXIMUM', step, .0000001)), gaps.inputs['Float'])
+    tube_iters = q.node('FunctionNodeFloatToInt', 'Passi estrusi')
+    tube_iters.rounding_mode = 'ROUND'
+    q.link(q.math('MULTIPLY', gaps.outputs['Integer'], is_tube), tube_iters.inputs['Float'])
+    dx = q.math('DIVIDE', span, q.math('MAXIMUM', gaps.outputs['Integer'], 1))
+    step_in, step_out = q.repeat('Passi guaina')
+    q.link(tube_iters.outputs['Integer'], step_in.inputs['Iterations'])
+    q.link(rim_init.outputs['Geometry'], step_in.inputs['Geometry'])
+    rim_attr = q.node('GeometryNodeInputNamedAttribute', 'Bordo corrente')
+    rim_attr.data_type = 'BOOLEAN'
+    rim_attr.inputs['Name'].default_value = 'bordo'
+    extrude = q.node('GeometryNodeExtrudeMesh', 'Fascia guaina')
+    extrude.mode = 'EDGES'
+    extrude.inputs['Offset Scale'].default_value = 1.0
+    q.link(step_in.outputs['Geometry'], extrude.inputs['Mesh'])
+    q.link(rim_attr.outputs['Attribute'], extrude.inputs['Selection'])
+    q.link(q.vec(dx, 0, 0), extrude.inputs['Offset'])
+    rim_next = q.node('GeometryNodeStoreNamedAttribute', 'Nuovo bordo')
+    rim_next.data_type = 'BOOLEAN'
+    rim_next.domain = 'EDGE'
+    rim_next.inputs['Name'].default_value = 'bordo'
+    q.link(extrude.outputs['Mesh'], rim_next.inputs['Geometry'])
+    q.link(extrude.outputs['Top'], rim_next.inputs['Value'])
+    q.link(rim_next.outputs['Geometry'], step_out.inputs['Geometry'])
+    cy = q.math('MULTIPLY', q.math('ADD', lo.outputs['Y'], hi.outputs['Y']), .5)
+    cz = q.math('MULTIPLY', q.math('ADD', lo.outputs['Z'], hi.outputs['Z']), .5)
+    outward_yz = q.vec(0, q.math('SUBTRACT', here.outputs['Y'], cy), q.math('SUBTRACT', here.outputs['Z'], cz))
+    wall_flip = q.node('GeometryNodeFlipFaces', 'Normali esterne')
+    q.link(step_out.outputs['Geometry'], wall_flip.inputs['Mesh'])
+    q.link(q.math('LESS_THAN', q.vmath('DOT_PRODUCT',
+                  q.node('GeometryNodeInputNormal').outputs['Normal'], outward_yz), 0),
+           wall_flip.inputs['Selection'])
+    skinned = q.join(wall_flip.outputs['Mesh'], ring.outputs['Selection'], far.outputs['Selection'])
+    weld = q.node('GeometryNodeMergeByDistance', 'Salda tappi')
+    weld.inputs['Mode'].default_value = 'All'
+    weld.inputs['Distance'].default_value = .00001
+    q.link(skinned, weld.inputs['Geometry'])
+    mats = q.node('GeometryNodeGeometryMaterials', 'Materiali tubo')
+    mats.inputs['Component Type'].default_value = 'Mesh'
+    q.link(part.outputs['Selection'], mats.inputs['Geometry'])
+    mat_item = q.node('GeometryNodeListGetItem', 'Primo materiale')
+    mat_item.socket_type = 'MATERIAL'
+    q.link(mats.outputs['Materials'], mat_item.inputs['List'])
+    mat_item.inputs['Index'].default_value = 0
+    with_mat = q.material(weld.outputs['Geometry'], mat_item.outputs['Value'])
+    sm_stat = q.node('GeometryNodeAttributeStatistic', 'Ombreggiatura tubo')
+    sm_stat.data_type = 'FLOAT'
+    sm_stat.domain = 'FACE'
+    q.link(part.outputs['Selection'], sm_stat.inputs['Geometry'])
+    q.link(q.node('GeometryNodeInputShadeSmooth').outputs['Smooth'], sm_stat.inputs['Attribute'])
+    shaded = q.node('GeometryNodeSetShadeSmooth', 'Stessa ombreggiatura')
+    q.link(with_mat, shaded.inputs['Geometry'])
+    q.link(q.math('GREATER_THAN', sm_stat.outputs['Max'], .5), shaded.inputs['Shade Smooth'])
+    cleaned = q.node('GeometryNodeRemoveAttribute', 'Pulisci bordo')
+    cleaned.inputs['Name'].default_value = 'bordo'
+    q.link(shaded.outputs['Geometry'], cleaned.inputs['Geometry'])
+    chosen = q.node('GeometryNodeSwitch', 'Solo i tubi lunghi')
+    chosen.input_type = 'GEOMETRY'
+    q.link(is_tube, chosen.inputs['Switch'])
+    q.link(part.outputs['Selection'], chosen.inputs['False'])
+    q.link(cleaned.outputs['Geometry'], chosen.inputs['True'])
+    q.link(q.join(enter.outputs['Geometry'], chosen.outputs['Output']), leave.inputs['Geometry'])
+    return leave.outputs['Geometry']
 
 
 def build_cable():
     """Lay every mesh in the cable collection once, starting where the strip ends."""
     q = Graph('LED | 04 Cavo su curva')
     q.sock('Curva', 'NodeSocketGeometry')
-    q.sock('Cavo', 'NodeSocketCollection')
-    q.sock('Inizio', default=0, lo=0, hi=40,
-           description='Arco, in metri, dove finisce la striscia.')
+    q.sock('Cavo flessibile', 'NodeSocketCollection')
+    q.sock('Connettore', 'NodeSocketCollection')
+    q.sock('Passo deformazione cavo', default=.001, lo=.0002, hi=.01,
+           description='Distanza fra gli anelli inseriti nella guaina, in metri.')
     p = q.i.outputs
-    geo = realize_collection(q, p['Cavo'], 'Cavo')
+    flex = densify_tubes(q, realize_collection(q, p['Cavo flessibile'], 'Cavo flessibile'),
+                         p['Passo deformazione cavo'])
+    rigid = realize_collection(q, p['Connettore'], 'Connettore', with_piece_id=True)
+    both = q.join(flex, rigid)
     pos = q.node('GeometryNodeInputPosition')
-    cap = q.node('GeometryNodeCaptureAttribute', 'Posizione nel cavo')
-    cap.domain = 'POINT'
-    cap.capture_items.new('VECTOR', 'Origine')
-    q.link(geo, cap.inputs['Geometry'])
-    q.link(pos.outputs['Position'], cap.inputs['Origine'])
-    orig = q.node('ShaderNodeSeparateXYZ')
-    q.link(cap.outputs['Origine'], orig.inputs['Vector'])
     box = q.node('GeometryNodeBoundBox', 'Ingombro cavo')
-    q.link(geo, box.inputs['Geometry'])
+    q.link(both, box.inputs['Geometry'])
     box_lo = q.node('ShaderNodeSeparateXYZ')
-    box_hi = q.node('ShaderNodeSeparateXYZ')
     q.link(box.outputs['Min'], box_lo.inputs['Vector'])
-    q.link(box.outputs['Max'], box_hi.inputs['Vector'])
-    # The end that meets the strip is min X. Its section, not the connector, sits on the curve.
+
+    def place(geometry, along, dx, y_rel, z_rel, role):
+        sample = q.node('GeometryNodeSampleCurve', 'Punto sulla curva')
+        sample.mode = 'LENGTH'
+        sample.use_all_curves = True
+        q.link(p['Curva'], sample.inputs['Curves'])
+        q.link(along, sample.inputs['Length'])
+        tangent, normal, binormal = curve_frame(q, sample)
+        moved = q.vmath('ADD', sample.outputs['Position'], q.vmath('ADD', q.vmath(
+            'SCALE', tangent, dx), q.vmath(
+            'ADD', q.vmath('SCALE', normal, q.math('MULTIPLY', y_rel, -1)),
+            q.vmath('SCALE', binormal, z_rel))))
+        cap_i = q.node('GeometryNodeCaptureAttribute', 'Origine pezzo')
+        cap_i.domain = 'POINT'
+        cap_i.capture_items.new('VECTOR', 'Origine')
+        q.link(geometry, cap_i.inputs['Geometry'])
+        q.link(pos.outputs['Position'], cap_i.inputs['Origine'])
+        placed = q.node('GeometryNodeSetPosition', 'Sul percorso')
+        q.link(cap_i.outputs['Geometry'], placed.inputs['Geometry'])
+        q.link(moved, placed.inputs['Position'])
+        marked = q.node('GeometryNodeStoreNamedAttribute', 'Ruolo')
+        marked.data_type = 'INT'
+        marked.domain = 'POINT'
+        marked.inputs['Name'].default_value = 'ruolo'
+        marked.inputs['Value'].default_value = role
+        q.link(placed.outputs['Geometry'], marked.inputs['Geometry'])
+        origin = q.node('GeometryNodeStoreNamedAttribute', 'Origine')
+        origin.data_type = 'FLOAT_VECTOR'
+        origin.domain = 'POINT'
+        origin.inputs['Name'].default_value = 'origine'
+        q.link(marked.outputs['Geometry'], origin.inputs['Geometry'])
+        q.link(cap_i.outputs['Origine'], origin.inputs['Value'])
+        flagged = q.node('GeometryNodeStoreNamedAttribute', 'Cavo')
+        flagged.data_type = 'FLOAT'
+        flagged.domain = 'POINT'
+        flagged.inputs['Name'].default_value = 'cavo'
+        flagged.inputs['Value'].default_value = 1.0
+        q.link(origin.outputs['Geometry'], flagged.inputs['Geometry'])
+        tan_store = q.node('GeometryNodeStoreNamedAttribute', 'Tangente cavo')
+        tan_store.data_type = 'FLOAT_VECTOR'
+        tan_store.domain = 'POINT'
+        tan_store.inputs['Name'].default_value = 'tangente'
+        q.link(flagged.outputs['Geometry'], tan_store.inputs['Geometry'])
+        q.link(tangent, tan_store.inputs['Value'])
+        return tan_store.outputs['Geometry']
+
+    flex_cap = q.node('GeometryNodeCaptureAttribute', 'Flessibile')
+    flex_cap.domain = 'POINT'
+    flex_cap.capture_items.new('VECTOR', 'Origine')
+    q.link(flex, flex_cap.inputs['Geometry'])
+    q.link(pos.outputs['Position'], flex_cap.inputs['Origine'])
+    flex_o = q.node('ShaderNodeSeparateXYZ')
+    q.link(flex_cap.outputs['Origine'], flex_o.inputs['Vector'])
     here = q.node('ShaderNodeSeparateXYZ')
     q.link(pos.outputs['Position'], here.inputs['Vector'])
     at_start = q.math('LESS_THAN', here.outputs['X'], q.math('ADD', box_lo.outputs['X'], .00001))
     stat = q.node('GeometryNodeAttributeStatistic', 'Sezione di attacco')
     stat.data_type = 'FLOAT_VECTOR'
     stat.domain = 'POINT'
-    q.link(geo, stat.inputs['Geometry'])
+    q.link(both, stat.inputs['Geometry'])
     q.link(at_start, stat.inputs['Selection'])
     q.link(pos.outputs['Position'], stat.inputs['Attribute'])
     sec_lo = q.node('ShaderNodeSeparateXYZ')
@@ -380,50 +586,41 @@ def build_cable():
     q.link(stat.outputs['Max'], sec_hi.inputs['Vector'])
     center_y = q.math('MULTIPLY', q.math('ADD', sec_lo.outputs['Y'], sec_hi.outputs['Y']), .5)
     center_z = q.math('MULTIPLY', q.math('ADD', sec_lo.outputs['Z'], sec_hi.outputs['Z']), .5)
-    arc = q.math('ADD', p['Inizio'], q.math('SUBTRACT', orig.outputs['X'], box_lo.outputs['X']), 'Arco')
-    length = q.node('GeometryNodeCurveLength')
-    q.link(p['Curva'], length.inputs['Curve'])
-    sample = q.node('GeometryNodeSampleCurve', 'Punto sulla curva')
-    sample.mode = 'LENGTH'
-    sample.use_all_curves = True
-    q.link(p['Curva'], sample.inputs['Curves'])
-    q.link(arc, sample.inputs['Length'])
-    tangent = q.vmath('NORMALIZE', sample.outputs['Tangent'], label='Tangente')
-    sampled = q.node('ShaderNodeSeparateXYZ')
-    q.link(sample.outputs['Position'], sampled.inputs['Vector'])
-    radial = q.vmath('NORMALIZE', q.vec(sampled.outputs['X'], sampled.outputs['Y'], 0), label='Radiale')
-    outward = q.math('LESS_THAN', q.vmath('DOT_PRODUCT', sample.outputs['Normal'], radial), 0)
-    normal = q.vmath('SCALE', sample.outputs['Normal'], q.math('SUBTRACT', 1, q.math('MULTIPLY', outward, 2)))
-    normal = q.vmath('SUBTRACT', normal, q.vmath('SCALE', tangent, q.vmath('DOT_PRODUCT', normal, tangent)))
-    normal = q.vmath('NORMALIZE', normal, label='Normale esterna')
-    binormal = q.vmath('CROSS_PRODUCT', normal, tangent, 'Binormale')
-    b_xyz = q.node('ShaderNodeSeparateXYZ')
-    t_xyz = q.node('ShaderNodeSeparateXYZ')
-    q.link(binormal, b_xyz.inputs['Vector'])
-    q.link(tangent, t_xyz.inputs['Vector'])
-    flip_b = q.math('MINIMUM', q.math('LESS_THAN', q.math('ABSOLUTE', t_xyz.outputs['Z']), .5),
-                    q.math('LESS_THAN', b_xyz.outputs['Z'], 0))
-    binormal = q.vmath('SCALE', binormal, q.math('SUBTRACT', 1, q.math('MULTIPLY', flip_b, 2)), 'Binormale in su')
-    y_rel = q.math('SUBTRACT', orig.outputs['Y'], center_y)
-    z_rel = q.math('SUBTRACT', orig.outputs['Z'], center_z)
-    moved = q.vmath('ADD', sample.outputs['Position'], q.vmath(
-        'ADD', q.vmath('SCALE', normal, q.math('MULTIPLY', y_rel, -1), '-Y verso l\'esterno'),
-        q.vmath('SCALE', binormal, z_rel, 'Z in verticale')))
-    placed = q.node('GeometryNodeSetPosition', 'Cavo sul percorso')
-    q.link(cap.outputs['Geometry'], placed.inputs['Geometry'])
-    q.link(moved, placed.inputs['Position'])
-    cut = q.node('GeometryNodeDeleteGeometry', 'Oltre la fine')
-    cut.domain = 'POINT'
-    cut.mode = 'ALL'
-    q.link(placed.outputs['Geometry'], cut.inputs['Geometry'])
-    q.link(q.math('GREATER_THAN', arc, q.math('ADD', length.outputs['Length'], .00001)), cut.inputs['Selection'])
+    flex_s = q.math('SUBTRACT', flex_o.outputs['X'], box_lo.outputs['X'])
+    flex_geo = place(flex_cap.outputs['Geometry'], flex_s, 0,
+                     q.math('SUBTRACT', flex_o.outputs['Y'], center_y),
+                     q.math('SUBTRACT', flex_o.outputs['Z'], center_z), 0)
+    piece_id = q.node('GeometryNodeInputNamedAttribute', 'Id connettore')
+    piece_id.data_type = 'INT'
+    piece_id.inputs['Name'].default_value = 'pezzo'
+    rigid_cap = q.node('GeometryNodeCaptureAttribute', 'Connettore')
+    rigid_cap.domain = 'POINT'
+    rigid_cap.capture_items.new('VECTOR', 'Origine')
+    q.link(rigid, rigid_cap.inputs['Geometry'])
+    q.link(pos.outputs['Position'], rigid_cap.inputs['Origine'])
+    rigid_o = q.node('ShaderNodeSeparateXYZ')
+    q.link(rigid_cap.outputs['Origine'], rigid_o.inputs['Vector'])
+    xmin = q.node('GeometryNodeFieldMinAndMax', 'X di innesto')
+    xmin.data_type = 'FLOAT'
+    xmin.domain = 'POINT'
+    q.link(rigid_o.outputs['X'], xmin.inputs['Value'])
+    q.link(piece_id.outputs['Attribute'], xmin.inputs['Group ID'])
+    rigid_s = q.math('SUBTRACT', xmin.outputs['Min'], box_lo.outputs['X'])
+    rigid_placed = place(rigid_cap.outputs['Geometry'], rigid_s,
+                         q.math('SUBTRACT', rigid_o.outputs['X'], xmin.outputs['Min']),
+                         q.math('SUBTRACT', rigid_o.outputs['Y'], center_y),
+                         q.math('SUBTRACT', rigid_o.outputs['Z'], center_z),
+                         1)
+    rigid_geo = q.node('GeometryNodeRemoveAttribute', 'Pulisci pezzo')
+    rigid_geo.inputs['Name'].default_value = 'pezzo'
+    q.link(rigid_placed, rigid_geo.inputs['Geometry'])
     domain = q.node('GeometryNodeAttributeDomainSize', 'Vertici cavo')
     domain.component = 'MESH'
-    q.link(geo, domain.inputs['Geometry'])
+    q.link(both, domain.inputs['Geometry'])
     out = q.node('GeometryNodeSwitch', 'Solo con un cavo scelto')
     out.input_type = 'GEOMETRY'
     q.link(q.math('GREATER_THAN', domain.outputs['Point Count'], 0), out.inputs['Switch'])
-    q.link(cut.outputs['Geometry'], out.inputs['True'])
+    q.link(q.join(flex_geo, rigid_geo.outputs['Geometry']), out.inputs['True'])
     return q.finish(out.outputs['Output'])
 
 
@@ -476,7 +673,10 @@ def build_master(path, strip, reel, cable):
     q.sock('Flangia up', 'NodeSocketObject')
     q.sock('Flangia down', 'NodeSocketObject')
     q.sock('Modulo PCB', 'NodeSocketObject')
-    q.sock('Cavo', 'NodeSocketCollection')
+    q.sock('Cavo flessibile', 'NodeSocketCollection')
+    q.sock('Connettore', 'NodeSocketCollection')
+    q.sock('Passo deformazione cavo', default=.001, lo=.0002, hi=.01,
+           description='Distanza fra gli anelli inseriti nella guaina, in metri.')
     for name, value, lo, hi in [('Raggio mozzo', .026, .012, .08), ('Raggio avvolgimento', .078, .025, .18),
                                 ('Passo radiale', .002, .0012, .008), ('Giri uscita', .83, .25, 1.5),
                                 ('Apertura uscita', .035, .005, .08)]:
@@ -550,6 +750,26 @@ def build_master(path, strip, reel, cable):
     single = q.node('GeometryNodeMeshToCurve', 'Percorso unico')
     single.mode = 'EDGES'
     q.link(weld.outputs['Geometry'], single.inputs['Mesh'])
+    # Mesh to Curve does not keep the winding order. The path has to start at the hub.
+    z0 = q.math('ADD', q.math('ADD', q.math('MULTIPLY', p['Altezza bobina'], -.5), margin),
+                q.math('MULTIPLY', larghezza, .5))
+    hub = q.vec(p['Raggio mozzo'], 0, z0)
+    path_head = q.node('GeometryNodeSampleCurve', 'Capo percorso')
+    path_foot = q.node('GeometryNodeSampleCurve', 'Coda percorso')
+    for sample, factor in ((path_head, 0.0), (path_foot, 1.0)):
+        sample.mode = 'FACTOR'
+        sample.use_all_curves = True
+        q.link(single.outputs['Curve'], sample.inputs['Curves'])
+        sample.inputs['Factor'].default_value = factor
+    path_back = q.node('GeometryNodeReverseCurve', 'Il percorso parte dal mozzo')
+    q.link(single.outputs['Curve'], path_back.inputs['Curve'])
+    path_aimed = q.node('GeometryNodeSwitch', 'Verso del percorso')
+    path_aimed.input_type = 'GEOMETRY'
+    q.link(q.math('LESS_THAN', q.vmath('DISTANCE', path_foot.outputs['Position'], hub),
+                  q.vmath('DISTANCE', path_head.outputs['Position'], hub)), path_aimed.inputs['Switch'])
+    q.link(single.outputs['Curve'], path_aimed.inputs['False'])
+    q.link(path_back.outputs['Curve'], path_aimed.inputs['True'])
+    single_curve = path_aimed.outputs['Output']
     pos = q.node('GeometryNodeInputPosition')
     radial = q.node('ShaderNodeSeparateXYZ')
     q.link(pos.outputs['Position'], radial.inputs['Vector'])
@@ -557,7 +777,7 @@ def build_master(path, strip, reel, cable):
     outward.operation = 'NORMALIZE'
     q.link(q.vec(radial.outputs['X'], radial.outputs['Y'], 0), outward.inputs[0])
     normal = q.node('GeometryNodeSetCurveNormal', 'Normale radiale')
-    q.link(single.outputs['Curve'], normal.inputs['Curve'])
+    q.link(single_curve, normal.inputs['Curve'])
     normal.inputs['Mode'].default_value = 'Free'
     q.link(outward.outputs['Vector'], normal.inputs['Normal'])
     strip_node = q.call(strip, '02 Striscia')
@@ -565,7 +785,8 @@ def build_master(path, strip, reel, cable):
     q.link(p['Modulo PCB'], strip_node.inputs['Modulo PCB'])
     q.link(passo, strip_node.inputs['Passo'])
     q.link(lo.outputs['X'], strip_node.inputs['Min X'])
-    cinfo = realize_collection(q, p['Cavo'], 'Cavo')
+    cinfo = q.join(realize_collection(q, p['Cavo flessibile'], 'Cavo flessibile'),
+                   realize_collection(q, p['Connettore'], 'Connettore'))
     cbox = q.node('GeometryNodeBoundBox', 'Lunghezza cavo')
     q.link(cinfo, cbox.inputs['Geometry'])
     c_lo = q.node('ShaderNodeSeparateXYZ')
@@ -574,8 +795,28 @@ def build_master(path, strip, reel, cable):
     q.link(cbox.outputs['Max'], c_hi.inputs['Vector'])
     cable_len = q.math('SUBTRACT', c_hi.outputs['X'], c_lo.outputs['X'], 'Lunghezza cavo')
     span = q.node('GeometryNodeCurveLength', 'Lunghezza nastro')
-    q.link(single.outputs['Curve'], span.inputs['Curve'])
-    # Same spiral as group 01, continued past the end of the strip.
+    q.link(single_curve, span.inputs['Curve'])
+    # Whole modules only: the cable starts where that last face sits, not at the raw curve end.
+    safe_pitch = q.math('MAXIMUM', passo, .0000001)
+    modules = q.node('FunctionNodeFloatToInt', 'Moduli interi')
+    modules.rounding_mode = 'FLOOR'
+    q.link(q.math('DIVIDE', span.outputs['Length'], safe_pitch), modules.inputs['Float'])
+    has_pitch = q.math('GREATER_THAN', passo, .00001)
+    attach = q.node('GeometryNodeSwitch', 'Arco di attacco')
+    attach.input_type = 'FLOAT'
+    q.link(has_pitch, attach.inputs['Switch'])
+    q.link(q.math('MULTIPLY', modules.outputs['Integer'], passo), attach.inputs['True'])
+    attach.inputs['False'].default_value = 0.0
+    # The cable curve starts at the attachment and runs along the same spiral.
+    on_curve = q.node('GeometryNodeTrimCurve', 'Dal PCB lungo la spirale')
+    on_curve.mode = 'LENGTH'
+    q.link(single_curve, on_curve.inputs['Curve'])
+    q.link(attach.outputs['Output'], on_curve.inputs['Start_001'])
+    q.link(q.math('MINIMUM', q.math('ADD', attach.outputs['Output'], cable_len), span.outputs['Length']),
+           on_curve.inputs['End_001'])
+    covered = q.node('GeometryNodeCurveLength', 'Tratto già sulla spirale')
+    q.link(on_curve.outputs['Curve'], covered.inputs['Curve'])
+    extra_len = q.math('MAXIMUM', q.math('SUBTRACT', cable_len, covered.outputs['Length']), 0)
     giri = p['Giri uscita']
     last_even = q.compare(q.math('FLOORED_MODULO', q.math('SUBTRACT', livelli, 1), 2), 0, label='Ultimo pari')
     t_end = q.node('GeometryNodeSwitch', 'Parametro finale')
@@ -587,10 +828,9 @@ def build_master(path, strip, reel, cable):
                     q.math('ADD', q.math('MULTIPLY', larghezza, .5),
                            q.math('MULTIPLY', q.math('SUBTRACT', livelli, 1), larghezza)),
                     'Quota ultimo livello')
-    extra = 4.0
-    along = q.math('DIVIDE', q.node('GeometryNodeInputIndex').outputs['Index'], 255)
-    outward_t = q.math('ADD', t_end.outputs['Output'], q.math('MULTIPLY', along, extra))
-    inward_t = q.math('MULTIPLY', q.math('MULTIPLY', along, extra), -1)
+    along = q.math('DIVIDE', q.node('GeometryNodeInputIndex').outputs['Index'], 3071)
+    outward_t = q.math('ADD', t_end.outputs['Output'], q.math('MULTIPLY', along, 3))
+    inward_t = q.math('MULTIPLY', q.math('MULTIPLY', along, 3), -1)
     t_tail = q.node('GeometryNodeSwitch', 'Verso di uscita')
     t_tail.input_type = 'FLOAT'
     q.link(last_even, t_tail.inputs['Switch'])
@@ -599,13 +839,15 @@ def build_master(path, strip, reel, cable):
     past = q.math('MAXIMUM', q.math('SUBTRACT', t_tail.outputs['Output'], turns), 0)
     expansion = q.math('MULTIPLY', p['Apertura uscita'],
                        q.math('POWER', q.math('DIVIDE', past, q.math('MAXIMUM', giri, .001)), 2))
-    radius = q.math('ADD', q.math('ADD', p['Raggio mozzo'],
-                                  q.math('MULTIPLY', t_tail.outputs['Output'], p['Passo radiale'])),
-                    expansion)
+    radius = q.math('MAXIMUM',
+                    q.math('ADD', q.math('ADD', p['Raggio mozzo'],
+                                         q.math('MULTIPLY', t_tail.outputs['Output'], p['Passo radiale'])),
+                           expansion),
+                    .004)
     angle = q.math('MULTIPLY', t_tail.outputs['Output'], 2 * math.pi)
     tail = q.node('GeometryNodeMeshLine', 'Prolungamento della spirale')
     tail.mode = 'OFFSET'
-    tail.inputs['Count'].default_value = 256
+    tail.inputs['Count'].default_value = 3072
     tail_pos = q.node('GeometryNodeSetPosition', 'Stessa spirale')
     q.link(tail.outputs['Mesh'], tail_pos.inputs['Geometry'])
     q.link(q.vec(q.math('MULTIPLY', radius, q.math('COSINE', angle)),
@@ -614,50 +856,105 @@ def build_master(path, strip, reel, cable):
     tail_curve = q.node('GeometryNodeMeshToCurve', 'Curva del prolungamento')
     tail_curve.mode = 'EDGES'
     q.link(tail_pos.outputs['Geometry'], tail_curve.inputs['Mesh'])
-    trimmed = q.node('GeometryNodeTrimCurve', 'Solo la lunghezza del cavo')
-    trimmed.mode = 'LENGTH'
-    q.link(tail_curve.outputs['Curve'], trimmed.inputs['Curve'])
-    trimmed.inputs['Start'].default_value = 0.0
-    q.link(cable_len, trimmed.inputs['End'])
-    joined = q.join(single.outputs['Curve'], trimmed.outputs['Curve'])
-    lead_edges = q.node('GeometryNodeCurveToMesh', 'Striscia e cavo in spigoli')
-    q.link(joined, lead_edges.inputs['Curve'])
-    lead_weld = q.node('GeometryNodeMergeByDistance', 'Una sola curva')
-    q.link(lead_edges.outputs['Mesh'], lead_weld.inputs['Geometry'])
-    lead_weld.inputs['Mode'].default_value = 'All'
-    lead_weld.inputs['Distance'].default_value = .00001
-    lead_curve = q.node('GeometryNodeMeshToCurve', 'Percorso unico con il cavo')
-    lead_curve.mode = 'EDGES'
-    q.link(lead_weld.outputs['Geometry'], lead_curve.inputs['Mesh'])
-    start_strip = q.node('GeometryNodeSampleCurve', 'Inizio nastro')
-    start_strip.mode = 'FACTOR'
-    start_strip.use_all_curves = True
-    q.link(single.outputs['Curve'], start_strip.inputs['Curves'])
-    start_strip.inputs['Factor'].default_value = 0.0
-    start_lead = q.node('GeometryNodeSampleCurve', 'Inizio curva unica')
-    start_lead.mode = 'FACTOR'
-    start_lead.use_all_curves = True
-    q.link(lead_curve.outputs['Curve'], start_lead.inputs['Curves'])
-    start_lead.inputs['Factor'].default_value = 0.0
-    flipped = q.vmath('LENGTH', q.vmath('SUBTRACT', start_lead.outputs['Position'], start_strip.outputs['Position']),
-                      label='Curva rovesciata')
-    lead_rev = q.node('GeometryNodeReverseCurve', 'Inizio dalla striscia')
-    q.link(lead_curve.outputs['Curve'], lead_rev.inputs['Curve'])
-    q.link(q.math('GREATER_THAN', flipped, .001), lead_rev.inputs['Selection'])
+    # Mesh to Curve can flip the spline. Keep the end that sits on the spiral.
+    r_join = q.math('ADD', q.math('ADD', p['Raggio mozzo'],
+                                  q.math('MULTIPLY', t_end.outputs['Output'], p['Passo radiale'])),
+                    q.math('MULTIPLY', p['Apertura uscita'], q.math('POWER', q.math('DIVIDE',
+                        q.math('MAXIMUM', q.math('SUBTRACT', t_end.outputs['Output'], turns), 0),
+                        q.math('MAXIMUM', giri, .001)), 2)))
+    ang_join = q.math('MULTIPLY', t_end.outputs['Output'], 2 * math.pi)
+    expect = q.vec(q.math('MULTIPLY', r_join, q.math('COSINE', ang_join)),
+                   q.math('MULTIPLY', r_join, q.math('SINE', ang_join)), z_last)
+    head = q.node('GeometryNodeSampleCurve', 'Capo grezzo')
+    foot = q.node('GeometryNodeSampleCurve', 'Coda grezza')
+    for sample, factor in ((head, 0.0), (foot, 1.0)):
+        sample.mode = 'FACTOR'
+        sample.use_all_curves = True
+        q.link(tail_curve.outputs['Curve'], sample.inputs['Curves'])
+        sample.inputs['Factor'].default_value = factor
+    flipped = q.math('LESS_THAN', q.vmath('DISTANCE', foot.outputs['Position'], expect),
+                     q.vmath('DISTANCE', head.outputs['Position'], expect))
+    backward = q.node('GeometryNodeReverseCurve', 'Raddrizza il prolungamento')
+    q.link(tail_curve.outputs['Curve'], backward.inputs['Curve'])
+    aimed = q.node('GeometryNodeSwitch', 'Verso del prolungamento')
+    aimed.input_type = 'GEOMETRY'
+    q.link(flipped, aimed.inputs['Switch'])
+    q.link(tail_curve.outputs['Curve'], aimed.inputs['False'])
+    q.link(backward.outputs['Curve'], aimed.inputs['True'])
+    tail_trim = q.node('GeometryNodeTrimCurve', 'Solo il tratto che manca')
+    tail_trim.mode = 'LENGTH'
+    q.link(aimed.outputs['Output'], tail_trim.inputs['Curve'])
+    tail_trim.inputs['Start_001'].default_value = 0.0
+    q.link(extra_len, tail_trim.inputs['End_001'])
+    end_pt = q.node('GeometryNodeSampleCurve', 'Fine della striscia')
+    end_pt.mode = 'LENGTH'
+    end_pt.use_all_curves = True
+    q.link(single_curve, end_pt.inputs['Curves'])
+    q.link(span.outputs['Length'], end_pt.inputs['Length'])
+    tail_pt = q.node('GeometryNodeSampleCurve', 'Inizio prolungamento')
+    tail_pt.mode = 'FACTOR'
+    tail_pt.use_all_curves = True
+    q.link(tail_trim.outputs['Curve'], tail_pt.inputs['Curves'])
+    tail_pt.inputs['Factor'].default_value = 0.0
+    shift = q.vmath('SUBTRACT', end_pt.outputs['Position'], tail_pt.outputs['Position'], 'Allinea il capo')
+    tail_shift = q.node('GeometryNodeSetPosition', 'Capo sulla fine della striscia')
+    q.link(tail_trim.outputs['Curve'], tail_shift.inputs['Geometry'])
+    q.link(shift, tail_shift.inputs['Offset'])
+    tangent_ok = q.math('GREATER_THAN', q.vmath(
+        'DOT_PRODUCT', q.vmath('NORMALIZE', end_pt.outputs['Tangent']),
+        q.vmath('NORMALIZE', tail_pt.outputs['Tangent'])), .999)
+    use_tail = q.math('MINIMUM', tangent_ok, q.math('GREATER_THAN', extra_len, .0001))
+    extended = q.join(on_curve.outputs['Curve'], tail_shift.outputs['Geometry'])
+    ext_edges = q.node('GeometryNodeCurveToMesh', 'Cavo in spigoli')
+    q.link(extended, ext_edges.inputs['Curve'])
+    ext_weld = q.node('GeometryNodeMergeByDistance', 'Salda il prolungamento')
+    q.link(ext_edges.outputs['Mesh'], ext_weld.inputs['Geometry'])
+    ext_weld.inputs['Mode'].default_value = 'All'
+    ext_weld.inputs['Distance'].default_value = .00001
+    ext_curve = q.node('GeometryNodeMeshToCurve', 'Curva del cavo')
+    ext_curve.mode = 'EDGES'
+    q.link(ext_weld.outputs['Geometry'], ext_curve.inputs['Mesh'])
+    cable_curve = q.node('GeometryNodeSwitch', 'Prolungamento solo se è tangente')
+    cable_curve.input_type = 'GEOMETRY'
+    q.link(use_tail, cable_curve.inputs['Switch'])
+    q.link(on_curve.outputs['Curve'], cable_curve.inputs['False'])
+    q.link(ext_curve.outputs['Curve'], cable_curve.inputs['True'])
+    join_pt = q.node('GeometryNodeSampleCurve', 'Punto di attacco')
+    join_pt.mode = 'LENGTH'
+    join_pt.use_all_curves = True
+    q.link(single_curve, join_pt.inputs['Curves'])
+    q.link(attach.outputs['Output'], join_pt.inputs['Length'])
+    raw_head = q.node('GeometryNodeSampleCurve', 'Inizio cavo')
+    raw_foot = q.node('GeometryNodeSampleCurve', 'Fine cavo')
+    for sample, factor in ((raw_head, 0.0), (raw_foot, 1.0)):
+        sample.mode = 'FACTOR'
+        sample.use_all_curves = True
+        q.link(cable_curve.outputs['Output'], sample.inputs['Curves'])
+        sample.inputs['Factor'].default_value = factor
+    cable_back = q.node('GeometryNodeReverseCurve', 'Il cavo parte dal PCB')
+    q.link(cable_curve.outputs['Output'], cable_back.inputs['Curve'])
+    cable_aimed = q.node('GeometryNodeSwitch', 'Verso del cavo')
+    cable_aimed.input_type = 'GEOMETRY'
+    q.link(q.math('LESS_THAN', q.vmath('DISTANCE', raw_foot.outputs['Position'], join_pt.outputs['Position']),
+                  q.vmath('DISTANCE', raw_head.outputs['Position'], join_pt.outputs['Position'])),
+           cable_aimed.inputs['Switch'])
+    q.link(cable_curve.outputs['Output'], cable_aimed.inputs['False'])
+    q.link(cable_back.outputs['Curve'], cable_aimed.inputs['True'])
     lead_pos = q.node('GeometryNodeInputPosition')
     lead_xy = q.node('ShaderNodeSeparateXYZ')
     q.link(lead_pos.outputs['Position'], lead_xy.inputs['Vector'])
     lead_out = q.node('ShaderNodeVectorMath', 'Esterno sul cavo')
     lead_out.operation = 'NORMALIZE'
     q.link(q.vec(lead_xy.outputs['X'], lead_xy.outputs['Y'], 0), lead_out.inputs[0])
-    lead_normal = q.node('GeometryNodeSetCurveNormal', 'Normale della curva unica')
-    q.link(lead_rev.outputs['Curve'], lead_normal.inputs['Curve'])
+    lead_normal = q.node('GeometryNodeSetCurveNormal', 'Normale del cavo')
+    q.link(cable_aimed.outputs['Output'], lead_normal.inputs['Curve'])
     lead_normal.inputs['Mode'].default_value = 'Free'
     q.link(lead_out.outputs['Vector'], lead_normal.inputs['Normal'])
     cable_node = q.call(cable, '04 Cavo')
     q.link(lead_normal.outputs['Curve'], cable_node.inputs['Curva'])
-    q.link(p['Cavo'], cable_node.inputs['Cavo'])
-    q.link(span.outputs['Length'], cable_node.inputs['Inizio'])
+    q.link(p['Cavo flessibile'], cable_node.inputs['Cavo flessibile'])
+    q.link(p['Connettore'], cable_node.inputs['Connettore'])
+    q.link(p['Passo deformazione cavo'], cable_node.inputs['Passo deformazione cavo'])
     reel_node = q.call(reel, '03 Bobina')
     for name in ('Flangia up', 'Flangia down', 'Raggio mozzo', 'Altezza bobina'):
         q.link(p[name], reel_node.inputs[name])
@@ -932,9 +1229,50 @@ def update_pcb(self, context):
     assign_library(self.id_data, 'pcb', self.pcb, {'Modulo PCB': stem})
 
 
+def role_bucket(name):
+    parent = ensure_collection()
+    col = bpy.data.collections.get(name)
+    if col is None:
+        col = bpy.data.collections.new(name)
+        parent.children.link(col)
+    for piece in list(col.objects):
+        col.objects.unlink(piece)
+    col.hide_render = True
+    return col
+
+
 def update_cavo(self, context):
+    obj = self.id_data
+    settings = obj.led_studio
+    if self.cavo == 'NONE':
+        set_socket(obj, 'Cavo flessibile', None)
+        set_socket(obj, 'Connettore', None)
+        settings.status = ''
+        return
     stem = self.cavo[:-6] if self.cavo.lower().endswith('.blend') else self.cavo
-    assign_collection(self.id_data, 'cavi', self.cavo, 'Cavo', stem)
+    rel = '//' + 'cavi' + '/' + self.cavo
+    if not os.path.isfile(bpy.path.abspath(rel)):
+        settings.status = 'File mancante: ' + self.cavo
+        return
+    try:
+        source = load_collection(rel, stem)
+    except Exception as exc:
+        settings.status = str(exc)
+        return
+    if source is None:
+        settings.status = 'Nel file manca la collection: ' + stem
+        return
+    parent = ensure_collection()
+    if source.name not in parent.children:
+        parent.children.link(source)
+    source.hide_render = True
+    flex = role_bucket('LED Studio | Cavo flessibile')
+    rigid = role_bucket('LED Studio | Cavo rigido')
+    for piece in source.objects:
+        (rigid if piece.get('led_role') == 'connector' else flex).objects.link(piece)
+    set_socket(obj, 'Cavo flessibile', flex)
+    set_socket(obj, 'Connettore', rigid)
+    settings.status = ''
 
 
 class LEDStudioSettings(bpy.types.PropertyGroup):
@@ -1012,6 +1350,7 @@ Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
    La sezione sta in Y e Z, il lato -Y guarda fuori dal mozzo.
    Conta la posizione di ogni oggetto: non unirli e non applicare i transform.
    Non si ripete: la misura X complessiva è il tratto.
+   Un oggetto con led_role = connector resta rigido; gli altri seguono la curva.
 5. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
    oppure esegui una volta il testo LED Studio Libreria.
    Nel modificatore Configurazione prodotto scegli Bobina, PCB e poi Cavo.
@@ -1101,12 +1440,12 @@ def make_cable(name, tube_mat, plug_mat):
     length = .08
     radius = .0015
     verts = []
-    for station in (0, .02, .04, .06, length):
+    for station in (0, length):
         for i in range(segs):
             ang = 2 * math.pi * i / segs
             verts.append((station, radius * math.cos(ang), radius * math.sin(ang)))
     faces = []
-    rings = 5
+    rings = 2
     for ring in range(rings - 1):
         for i in range(segs):
             nxt = (i + 1) % segs
@@ -1130,6 +1469,7 @@ def make_cable(name, tube_mat, plug_mat):
     plug_mesh.update()
     plug = bpy.data.objects.new(name + ' connettore', plug_mesh)
     plug.location.x = length + hx
+    plug['led_role'] = 'connector'
     col = bpy.data.collections.new(name)
     col.objects.link(tube)
     col.objects.link(plug)
@@ -1253,81 +1593,129 @@ def analyze_strip(obj):
     return report
 
 
-def check_cable(obj, mat_name):
-    """The lead starts on the strip end, follows its tangent, and bends outward."""
+def check_cable(obj):
+    """The cable section meets the PCB end face, and the sheath follows the curve."""
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
     ev = obj.evaluated_get(deps)
     mesh = ev.to_mesh()
+    for vert in mesh.vertices:
+        if not all(math.isfinite(axis) for axis in vert.co):
+            ev.to_mesh_clear()
+            raise RuntimeError('Coordinate non finite sulla mesh valutata')
+    if 'nastro' not in mesh.attributes or 'cavo' not in mesh.attributes or 'origine' not in mesh.attributes or 'tangente' not in mesh.attributes:
+        ev.to_mesh_clear()
+        raise RuntimeError('Mancano gli attributi di attacco')
+    strip = []
     cable = []
+    sheath = []
     plug = []
-    used = set()
+    cable_verts = set()
+    sheath_verts = set()
+    plug_verts = set()
+    for i, vert in enumerate(mesh.vertices):
+        if mesh.attributes['nastro'].data[i].value > .5:
+            strip.append((mesh.attributes['arco'].data[i].value, vert.co.copy(),
+                          mesh.attributes['tangente'].data[i].vector.copy()))
+        if mesh.attributes['cavo'].data[i].value > .5:
+            origin = mesh.attributes['origine'].data[i].vector.copy()
+            placed = vert.co.copy()
+            heading = mesh.attributes['tangente'].data[i].vector.copy()
+            cable.append((origin, placed, heading))
+            cable_verts.add(i)
+            if 'ruolo' in mesh.attributes and mesh.attributes['ruolo'].data[i].value == 1:
+                plug.append((origin, placed))
+                plug_verts.add(i)
+            else:
+                sheath.append((origin, placed))
+                sheath_verts.add(i)
+    sheath_faces = 0
+    plug_faces = 0
+    used_mats = set()
     for poly in mesh.polygons:
-        slot = mesh.materials[poly.material_index] if poly.material_index < len(mesh.materials) else None
-        if slot is None or mat_name not in slot.name:
-            continue
-        is_plug = 'connettore' in slot.name
-        for index in poly.vertices:
-            if index not in used:
-                used.add(index)
-                co = mesh.vertices[index].co.copy()
-                cable.append(co)
-                if is_plug:
-                    plug.append(co)
-    strip = [v.co.copy() for i, v in enumerate(mesh.vertices)
-             if i not in used and abs(v.co.z) < .0045 and math.hypot(v.co.x, v.co.y) > .03]
+        if all(v in sheath_verts for v in poly.vertices):
+            sheath_faces += 1
+        elif all(v in plug_verts for v in poly.vertices):
+            plug_faces += 1
+        if any(v in cable_verts for v in poly.vertices) and poly.material_index < len(mesh.materials):
+            slot = mesh.materials[poly.material_index]
+            if slot:
+                used_mats.add(slot.name)
+    mats = [slot.name for slot in mesh.materials if slot]
     ev.to_mesh_clear()
-    if len(cable) < 8 or len(strip) < 8:
-        raise RuntimeError('Il cavo non è in scena: pezzi %d, striscia %d' % (len(cable), len(strip)))
-    if len(plug) < 8:
-        raise RuntimeError('Manca il connettore: la collection non è arrivata intera')
-    plug_r = max(math.hypot(v.x, v.y) for v in plug)
-    tube_r = max(math.hypot(v.x, v.y) for v in cable if v not in plug)
-    if plug_r <= tube_r:
-        raise RuntimeError('Il connettore non sta oltre il tubo')
-    tip = max(math.hypot(v.x, v.y) for v in strip)
-    inner = min(cable, key=lambda v: math.hypot(v.x, v.y))
-    ring = [v for v in cable if (v - inner).length < .0032]
-    if len(ring) < 8:
-        raise RuntimeError('Il cavo non ha il capo di attacco')
-    start = sum(ring, Vector()) / len(ring)
-    closest = sorted(strip, key=lambda v: (v - start).length)[:4]
-    end = sum(closest, Vector()) / len(closest)
+    if len(strip) < 8 or len(cable) < 8:
+        raise RuntimeError('Il cavo non è in scena: nastro %d, cavo %d' % (len(strip), len(cable)))
+    end_arc = max(arc for arc, _co, _tangent in strip)
+    end_face = [(co, tangent) for arc, co, tangent in strip if arc > end_arc - .00005]
+    min_x = min(origin.x for origin, _co, _tangent in cable)
+    start_face = [(co, tangent) for origin, co, tangent in cable if origin.x < min_x + .00005]
+    if len(end_face) < 3 or len(start_face) < 3:
+        raise RuntimeError('Manca la sezione di attacco')
+    end = sum((co for co, _tangent in end_face), Vector()) / len(end_face)
+    end_tangent = sum((tangent for _co, tangent in end_face), Vector()).normalized()
+    start = sum((co for co, _tangent in start_face), Vector()) / len(start_face)
+    start_tangent = sum((tangent for _co, tangent in start_face), Vector()).normalized()
     gap = (start - end).length
-    # The test module only has vertices at the ends of its 4 mm pitch, so the
-    # mesh can stop a couple of millimetres before the curve end. A real PCB,
-    # with vertices all along X, meets the cable.
-    if gap > .0025:
-        raise RuntimeError('Attacco del cavo staccato: %.4f m' % gap)
-    ahead = [v for v in cable if .008 < (v - start).length < .02]
-    before = [v for v in strip if .006 < (v - end).length < .015 and math.hypot(v.x, v.y) < math.hypot(end.x, end.y) + .001]
-    if len(ahead) < 4 or not before:
-        raise RuntimeError('Manca il tratto fra striscia e cavo')
-    prev = sum(before, Vector()) / len(before)
-    mid = sum(ahead, Vector()) / len(ahead)
-    align = (end - prev).normalized().dot((mid - start).normalized())
-    if align < .95:
-        raise RuntimeError('Il cavo non segue la tangente della striscia: %.3f' % align)
-    far = max(math.hypot(v.x, v.y) for v in cable)
-    if far < tip + .005:
-        raise RuntimeError('Il cavo non esce oltre la striscia')
-    outer_pts = [v for v in cable if math.hypot(v.x, v.y) > far - .003]
-    outer = sum(outer_pts, Vector()) / len(outer_pts)
-    chord = outer - start
-    span = chord.length
-    half = []
-    for v in cable:
-        t = (v - start).dot(chord) / (span * span)
-        if .4 < t < .6:
-            half.append(v)
-    if not half:
-        raise RuntimeError('Il cavo non ha un tratto centrale')
-    center = sum(half, Vector()) / len(half)
-    closest = start + chord * ((center - start).dot(chord) / (span * span))
-    bow = (center - closest).length
-    print('LED_CHECK cavo gap', round(gap, 5), 'far', round(far - tip, 4), 'bow', round(bow, 4))
+    align = end_tangent.dot(start_tangent)
+    buckets = {}
+    for origin, co in sheath:
+        buckets.setdefault(round(origin.x, 4), []).append(co)
+    stations = sorted(buckets.items())
+    if len(stations) < 20:
+        raise RuntimeError('La guaina non è stata infittita: %d sezioni' % len(stations))
+    if sheath_faces < (len(stations) - 1) * 8:
+        raise RuntimeError('La guaina non ha le facce laterali: %d facce' % sheath_faces)
+    centers = []
+    for sx, pts in stations:
+        ctr = sum(pts, Vector()) / len(pts)
+        rad = min((pt - ctr).length for pt in pts)
+        if rad < .0004:
+            raise RuntimeError('Sezione della guaina collassata a X=%.4f' % sx)
+        centers.append((sx, ctr))
+    for (x0, c0), (x1, c1) in zip(centers, centers[1:]):
+        if (c1 - c0).length < (x1 - x0) * .35:
+            raise RuntimeError('Percorso cavo troppo corto: sezioni accumulate a X=%.4f' % x1)
+    sheath_hi = stations[-1][0]
+    mid_idx = len(centers) // 2
+    mid = centers[mid_idx][1]
+    far = centers[-1][1]
+    chord = far - start
+    closest = start + chord * ((mid - start).dot(chord) / chord.length_squared)
+    bow = (mid - closest).length
+    rigid = 0.0
+    plug_joint = 0.0
+    if len(plug) >= 4:
+        for i in range(len(plug)):
+            for j in range(i + 1, len(plug)):
+                rigid = max(rigid, abs((plug[i][1] - plug[j][1]).length - (plug[i][0] - plug[j][0]).length))
+        inlet_x = min(origin.x for origin, _co in plug)
+        inlet_pts = [co for origin, co in plug if origin.x < inlet_x + .00005]
+        if inlet_pts:
+            plug_joint = (sum(inlet_pts, Vector()) / len(inlet_pts) - far).length
+    flex_len = sheath_hi - min_x
+    print(
+        'LED_CHECK cavo blender %s | pcb %.4f m P_pcb (%.4f, %.4f, %.4f) | flex %.4f m P_cavo (%.4f, %.4f, %.4f) | '
+        'gap %.5f mm | dot %.5f | freccia %.4f m | sezioni %d | facce_guaina %d | flex_v %d | rigidi_v %d facce_conn %d | '
+        'innesto_conn %.5f mm | deform_conn %.5f mm' % (
+            '.'.join(str(n) for n in bpy.app.version), end_arc, end.x, end.y, end.z,
+            flex_len, start.x, start.y, start.z, gap * 1000, align, bow,
+            len(stations), sheath_faces, len(sheath), len(plug), plug_faces,
+            plug_joint * 1000, rigid * 1000))
+    print('LED_CHECK materiali cavo', ', '.join(sorted(used_mats)))
+    if gap > .0001:
+        raise RuntimeError('Attacco del cavo staccato: %.4f mm' % (gap * 1000))
+    if align < .999:
+        raise RuntimeError('Il cavo non segue la tangente della striscia: %.4f' % align)
     if bow < .001:
-        raise RuntimeError('Il cavo è diritto, non segue la curva')
+        raise RuntimeError('La guaina non segue la curva: freccia %.4f mm' % (bow * 1000))
+    if len(plug) < 8 or plug_faces < 6:
+        raise RuntimeError('Manca il connettore')
+    if rigid > .0001:
+        raise RuntimeError('Il connettore si è deformato: %.4f mm' % (rigid * 1000))
+    if plug_joint > .0001:
+        raise RuntimeError('Connettore staccato dalla guaina: %.4f mm' % (plug_joint * 1000))
+    if not any('test cavo' in name for name in used_mats) or not any('connettore' in name for name in used_mats):
+        raise RuntimeError('Materiali del cavo non conservati sulle facce: ' + ', '.join(mats))
 
 
 def exercise_library(scene, obj, values):
@@ -1410,7 +1798,37 @@ def exercise_library(scene, obj, values):
         obj.led_studio.cavo = 'cavo bianco.blend'
         if obj.led_studio.status:
             raise RuntimeError(obj.led_studio.status)
-        check_cable(obj, 'test cavo')
+        for height in (.010, .020, .028):
+            set_input(mod, 'Altezza bobina', height)
+            print('LED_CHECK altezza', height)
+            check_cable(obj)
+        set_input(mod, 'Altezza bobina', .010)
+        set_input(mod, 'Giri uscita', 1.15)
+        set_input(mod, 'Apertura uscita', .05)
+        set_input(mod, 'Raggio avvolgimento', .092)
+        print('LED_CHECK variazione spirale')
+        check_cable(obj)
+        obj.led_studio.cavo = 'NONE'
+        if obj.led_studio.status:
+            raise RuntimeError(obj.led_studio.status)
+        bpy.context.view_layer.update()
+        deps = bpy.context.evaluated_depsgraph_get()
+        ev = obj.evaluated_get(deps)
+        bare = ev.to_mesh()
+        left = sum(1 for item in bare.attributes['cavo'].data if item.value > .5) if 'cavo' in bare.attributes else 0
+        ev.to_mesh_clear()
+        if left:
+            raise RuntimeError('Il cavo resta in scena dopo la rimozione: %d' % left)
+        print('LED_CHECK senza cavo')
+        obj.led_studio.pcb = 'NONE'
+        bpy.context.view_layer.update()
+        ev = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        reel_only = ev.to_mesh()
+        strip_left = sum(1 for item in reel_only.attributes['nastro'].data if item.value > .5) if 'nastro' in reel_only.attributes else 0
+        ev.to_mesh_clear()
+        if strip_left:
+            raise RuntimeError('La striscia resta in scena senza PCB: %d' % strip_left)
+        print('LED_CHECK senza pcb')
     finally:
         if obj.led_studio.bobina != 'NONE':
             obj.led_studio.bobina = 'NONE'
@@ -1438,12 +1856,22 @@ def exercise_library(scene, obj, values):
             local = bpy.data.materials.get(PREFIX + ' | ' + name)
             if local and local.users == 0:
                 bpy.data.materials.remove(local)
+        for bucket_name in ('LED Studio | Cavo flessibile', 'LED Studio | Cavo rigido'):
+            bucket = bpy.data.collections.get(bucket_name)
+            if bucket and not bucket.objects:
+                for parent in bpy.data.collections:
+                    if bucket.name in parent.children:
+                        parent.children.unlink(bucket)
+                bpy.data.collections.remove(bucket)
         col = bpy.data.collections.get('LED Studio | Libreria')
-        if col and not col.objects:
+        if col and not col.objects and not col.children:
             for scene_ in bpy.data.scenes:
                 if col.name in scene_.collection.children:
                     scene_.collection.children.unlink(col)
             bpy.data.collections.remove(col)
+        for reset_name, reset_val in (('Altezza bobina', .014), ('Giri uscita', .83),
+                                      ('Apertura uscita', .035), ('Raggio avvolgimento', .078)):
+            set_input(obj.modifiers['Configurazione prodotto'], reset_name, reset_val)
         for name, value in values.items():
             set_input(obj.modifiers['Configurazione prodotto'], name, value)
         shutil.rmtree(temp, ignore_errors=True)
