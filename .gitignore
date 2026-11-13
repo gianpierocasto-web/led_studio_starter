@@ -1,22 +1,19 @@
-# graphify - cache e artefatti locali
-graphify-out/.graphify_*
-graphify-out/.graphify_chunk_*
-graphify-out/cost.json
-graphify-out/graph.html
-graphify-out/obsidian/
-
-# graphify — memoria strutturale versionata
-!graphify-out/graph.json
-!graphify-out/GRAPH_REPORT.md
-!graphify-out/manifest.json
+# Non servono al funzionamento di LED_Studio.blend
+/docs/
+/graphify-out/
+/archivio/
+/.cursor/
+.graphify-project.json
+README.md
 
 *.blend1
-graphify-out/20*/
 
-# archivio locale — originali, zip e backup, mai versionare
-/archivio/
+# Librerie utente: restano accanto al blend, non su GitHub
+/bobine/*.blend
+/pcb/*.blend
+/cavi/*.blend
 
-# segreti — mai versionare
+# segreti
 .env
 .env.*
 *.pem

@@ -1,7 +1,0 @@
-Verificato in Blender 4.3.2.
-Tre preset: valutazione Geometry Nodes senza collegamenti invalidi.
-Variazione larghezza PCB +4 mm: ingombro verticale aggiornato +4 mm per ogni preset.
-Componenti rigidi presenti dopo valutazione e realizzazione delle istanze.
-Append della collezione Prodotto | 02_Caldo_10mm in progetto vuoto: riuscito.
-Render Cycles del preset 10 mm: riuscito; anteprima inclusa.
-Altre versioni di Blender non provate.
