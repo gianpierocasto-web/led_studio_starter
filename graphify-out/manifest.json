@@ -6,21 +6,21 @@
     "semantic_hash": "c3c0016b26595ced7aad5132433b7e61"
   },
   "README.md": {
-    "mtime": 1794563926.7930338,
-    "seen": 1794566618.043213,
-    "ast_hash": "395e3e0c58ae9d9070a6d1db6420c144",
+    "mtime": 1794566639.3765244,
+    "seen": 1794579494.1203365,
+    "ast_hash": "1f4aa1e9105662ff87a1b95561ed0b04",
     "semantic_hash": ""
   },
   "scripts/led_starter.py": {
-    "mtime": 1794566574.9573774,
-    "seen": 1794566618.043213,
-    "ast_hash": "74ff3cad6be9faea0cb89f1d4107e958",
+    "mtime": 1794579432.2356083,
+    "seen": 1794579494.1203365,
+    "ast_hash": "f386b3c0458f607ad2cc0d3336016539",
     "semantic_hash": ""
   },
   "docs/LEGGIMI.txt": {
-    "mtime": 1794566575.3880427,
-    "seen": 1794566618.043213,
-    "ast_hash": "3eddac019c6dac8eb732f123bac8fdb0",
+    "mtime": 1794579228.237122,
+    "seen": 1794579494.1203365,
+    "ast_hash": "dd77a885dbcecaef22ea36fe83fe8b97",
     "semantic_hash": ""
   },
   "docs/VERIFICA.txt": {

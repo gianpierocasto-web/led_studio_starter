@@ -1,8 +1,9 @@
 """LED Studio — Geometry Nodes starter, Blender 5.3+. Run from Text Editor.
 Creates a NEW scene for each preset. Existing scenes and objects are retained.
 CLI: blender -b --python scripts/led_starter.py -- --output /absolute/path/LED_Studio.blend
+     blender -b LED_Studio.blend --python scripts/led_starter.py -- --upgrade-inplace
 
-Coil and PCB geometry come from .blend files in ./bobine and ./pcb.
+Coil, PCB and cable geometry come from .blend files in ./bobine, ./pcb and ./cavi.
 The embedded text "LED Studio Libreria" registers the modifier panel on file load.
 """
 import bpy
@@ -204,22 +205,19 @@ def build_strip():
     """Repeat the modeled module along the curve, one vertex at a time."""
     q = Graph('LED | 02 PCB e componenti su curva')
     q.sock('Curva', 'NodeSocketGeometry')
-    q.sock('Modulo PCB', 'NodeSocketObject')
+    q.sock('Modulo PCB', 'NodeSocketCollection')
     q.sock('Passo', default=.016, lo=.0005, hi=.1,
            description='Lunghezza X del modulo, in metri.')
     q.sock('Min X', default=-.008, lo=-.1, hi=.1,
            description='Inizio X del modulo, in metri.')
     p = q.i.outputs
-    info = q.node('GeometryNodeObjectInfo', 'Modulo PCB')
-    info.transform_space = 'ORIGINAL'
-    info.inputs['As Instance'].default_value = False
-    q.link(p['Modulo PCB'], info.inputs['Object'])
+    mod_geo = realize_collection(q, p['Modulo PCB'], 'Modulo PCB')
     pos = q.node('GeometryNodeInputPosition')
 
     cap = q.node('GeometryNodeCaptureAttribute', 'Posizione nel modulo')
     cap.domain = 'POINT'
     cap.capture_items.new('VECTOR', 'Origine')
-    q.link(info.outputs['Geometry'], cap.inputs['Geometry'])
+    q.link(mod_geo, cap.inputs['Geometry'])
     q.link(pos.outputs['Position'], cap.inputs['Origine'])
     orig = q.node('ShaderNodeSeparateXYZ')
     q.link(cap.outputs['Origine'], orig.inputs['Vector'])
@@ -230,7 +228,7 @@ def build_strip():
         stat = q.node('GeometryNodeAttributeStatistic', label)
         stat.data_type = 'FLOAT_VECTOR'
         stat.domain = 'POINT'
-        q.link(info.outputs['Geometry'], stat.inputs['Geometry'])
+        q.link(mod_geo, stat.inputs['Geometry'])
         q.link(selection, stat.inputs['Selection'])
         q.link(pos.outputs['Position'], stat.inputs['Attribute'])
         lo = q.node('ShaderNodeSeparateXYZ')
@@ -252,7 +250,7 @@ def build_strip():
     z_hi = q.math('MINIMUM', s_hi['Z'], e_hi['Z'])
     valid = q.math('MINIMUM', q.math('GREATER_THAN', y_hi, y_lo), q.math('GREATER_THAN', z_hi, z_lo))
     box = q.node('GeometryNodeBoundBox', 'Ingombro modulo')
-    q.link(info.outputs['Geometry'], box.inputs['Geometry'])
+    q.link(mod_geo, box.inputs['Geometry'])
     box_lo = q.node('ShaderNodeSeparateXYZ')
     box_hi = q.node('ShaderNodeSeparateXYZ')
     q.link(box.outputs['Min'], box_lo.inputs['Vector'])
@@ -271,7 +269,7 @@ def build_strip():
 
     domain = q.node('GeometryNodeAttributeDomainSize', 'Vertici modulo')
     domain.component = 'MESH'
-    q.link(info.outputs['Geometry'], domain.inputs['Geometry'])
+    q.link(mod_geo, domain.inputs['Geometry'])
     has_module = q.math('GREATER_THAN', domain.outputs['Point Count'], 0)
     length = q.node('GeometryNodeCurveLength')
     q.link(p['Curva'], length.inputs['Curve'])
@@ -627,28 +625,25 @@ def build_cable():
 def build_reel():
     """Move up and down apart. A cylinder fills the opening with up's first material."""
     q = Graph('LED | 03 Bobina parametrica')
-    q.sock('Flangia up', 'NodeSocketObject')
-    q.sock('Flangia down', 'NodeSocketObject')
+    q.sock('Flangia up', 'NodeSocketCollection')
+    q.sock('Flangia down', 'NodeSocketCollection')
     q.sock('Raggio mozzo', default=.026, lo=.012, hi=.08)
     q.sock('Altezza bobina', default=.014, lo=.002, hi=.2,
            description='Luce interna fra le flange, in metri.')
     p = q.i.outputs
 
     def flange(socket_name, sign):
-        info = q.node('GeometryNodeObjectInfo', socket_name)
-        info.transform_space = 'ORIGINAL'
-        info.inputs['As Instance'].default_value = False
-        q.link(p[socket_name], info.inputs['Object'])
+        flange_geo = realize_collection(q, p[socket_name], socket_name)
         box = q.node('GeometryNodeBoundBox')
-        q.link(info.outputs['Geometry'], box.inputs['Geometry'])
+        q.link(flange_geo, box.inputs['Geometry'])
         sep = q.node('ShaderNodeSeparateXYZ')
         q.link(box.outputs['Min'] if sign > 0 else box.outputs['Max'], sep.inputs['Vector'])
         half = q.math('MULTIPLY', p['Altezza bobina'], .5 * sign)
-        moved = q.transform(info.outputs['Geometry'], q.vec(0, 0, q.math('SUBTRACT', half, sep.outputs['Z'])))
-        return moved, info
+        moved = q.transform(flange_geo, q.vec(0, 0, q.math('SUBTRACT', half, sep.outputs['Z'])))
+        return moved, flange_geo
 
-    up, up_info = flange('Flangia up', 1)
-    down, _down_info = flange('Flangia down', -1)
+    up, up_geo = flange('Flangia up', 1)
+    down, _down_geo = flange('Flangia down', -1)
     cyl = q.node('GeometryNodeMeshCylinder', 'Mozzo')
     cyl.inputs['Vertices'].default_value = 64
     cyl.inputs['Side Segments'].default_value = 1
@@ -658,7 +653,7 @@ def build_reel():
     q.link(p['Altezza bobina'], cyl.inputs['Depth'])
     mats = q.node('GeometryNodeGeometryMaterials')
     mats.inputs['Component Type'].default_value = 'Mesh'
-    q.link(up_info.outputs['Geometry'], mats.inputs['Geometry'])
+    q.link(up_geo, mats.inputs['Geometry'])
     item = q.node('GeometryNodeListGetItem')
     item.socket_type = 'MATERIAL'
     q.link(mats.outputs['Materials'], item.inputs['List'])
@@ -670,9 +665,9 @@ def build_reel():
 def build_master(path, strip, reel, cable):
     """Stack alternating spiral layers in the reel opening and lay the PCB and cable."""
     q = Graph('LED | 00 Prodotto completo')
-    q.sock('Flangia up', 'NodeSocketObject')
-    q.sock('Flangia down', 'NodeSocketObject')
-    q.sock('Modulo PCB', 'NodeSocketObject')
+    q.sock('Flangia up', 'NodeSocketCollection')
+    q.sock('Flangia down', 'NodeSocketCollection')
+    q.sock('Modulo PCB', 'NodeSocketCollection')
     q.sock('Cavo flessibile', 'NodeSocketCollection')
     q.sock('Connettore', 'NodeSocketCollection')
     q.sock('Passo deformazione cavo', default=.001, lo=.0002, hi=.01,
@@ -684,12 +679,9 @@ def build_master(path, strip, reel, cable):
     q.sock('Altezza bobina', default=.014, lo=.002, hi=.2,
            description='Luce interna fra le flange, in metri. I livelli sono la parte intera di questa misura divisa per la larghezza Z del PCB.')
     p = q.i.outputs
-    info = q.node('GeometryNodeObjectInfo', 'Quote modulo')
-    info.transform_space = 'ORIGINAL'
-    info.inputs['As Instance'].default_value = False
-    q.link(p['Modulo PCB'], info.inputs['Object'])
+    mod_geo = realize_collection(q, p['Modulo PCB'], 'Quote modulo')
     box = q.node('GeometryNodeBoundBox')
-    q.link(info.outputs['Geometry'], box.inputs['Geometry'])
+    q.link(mod_geo, box.inputs['Geometry'])
     lo = q.node('ShaderNodeSeparateXYZ')
     hi = q.node('ShaderNodeSeparateXYZ')
     q.link(box.outputs['Min'], lo.inputs['Vector'])
@@ -1125,150 +1117,123 @@ def ensure_collection():
     return col
 
 
-def load_objects(rel_path, names):
-    target = norm(rel_path)
-    found = {}
-    for obj in bpy.data.objects:
-        lib = obj.library
-        if lib is None or norm(lib.filepath) != target:
-            continue
-        for name in names:
-            if name not in found and same_object(name, obj.name):
-                found[name] = obj
-    needed = [name for name in names if name not in found]
-    if needed:
-        with bpy.data.libraries.load(rel_path, link=True) as (src, dst):
-            dst.objects = [name for name in needed if name in list(src.objects)]
-        for obj in dst.objects:
-            if obj is None:
-                continue
-            for name in needed:
-                if same_object(name, obj.name):
-                    found[name] = obj
-    col = ensure_collection()
-    for obj in found.values():
-        if obj.name not in col.objects:
-            col.objects.link(obj)
-        obj.hide_render = True
-    return found
-
-
-def assign_library(obj, kind, filename, mapping):
-    settings = obj.led_studio
-    if filename == 'NONE':
-        for socket in mapping:
-            set_socket(obj, socket, None)
-        settings.status = ''
-        return
-    rel = '//' + kind + '/' + filename
-    if not os.path.isfile(bpy.path.abspath(rel)):
-        settings.status = 'File mancante: ' + filename
-        return
-    try:
-        found = load_objects(rel, list(mapping.values()))
-    except Exception as exc:
-        settings.status = str(exc)
-        return
-    missing = [name for name in mapping.values() if name not in found]
-    if missing:
-        settings.status = 'Nel file manca: ' + ', '.join(missing)
-        return
-    for socket, obj_name in mapping.items():
-        set_socket(obj, socket, found[obj_name])
-    settings.status = ''
-
-
-def load_collection(rel_path, name):
-    target = norm(rel_path)
-    for col in bpy.data.collections:
-        lib = col.library
-        if lib is None or norm(lib.filepath) != target:
-            continue
-        if same_object(name, col.name):
-            return col
-    with bpy.data.libraries.load(rel_path, link=True) as (src, dst):
-        dst.collections = [item for item in src.collections if same_object(name, item)]
-    for col in dst.collections:
-        if col is not None and same_object(name, col.name):
-            return col
-    return None
-
-
-def assign_collection(obj, kind, filename, socket, name):
-    settings = obj.led_studio
-    if filename == 'NONE':
-        set_socket(obj, socket, None)
-        settings.status = ''
-        return
-    rel = '//' + kind + '/' + filename
-    if not os.path.isfile(bpy.path.abspath(rel)):
-        settings.status = 'File mancante: ' + filename
-        return
-    try:
-        col = load_collection(rel, name)
-    except Exception as exc:
-        settings.status = str(exc)
-        return
-    if col is None:
-        settings.status = 'Nel file manca la collection: ' + name
-        return
-    parent = ensure_collection()
-    if col.name not in parent.children:
-        parent.children.link(col)
-    col.hide_render = True
-    set_socket(obj, socket, col)
-    settings.status = ''
-
-
-def update_bobina(self, context):
-    assign_library(self.id_data, 'bobine', self.bobina, {'Flangia up': 'up', 'Flangia down': 'down'})
-
-
-def update_pcb(self, context):
-    stem = self.pcb[:-6] if self.pcb.lower().endswith('.blend') else self.pcb
-    assign_library(self.id_data, 'pcb', self.pcb, {'Modulo PCB': stem})
-
-
 def role_bucket(name):
     parent = ensure_collection()
     col = bpy.data.collections.get(name)
     if col is None:
         col = bpy.data.collections.new(name)
+    if col.name not in parent.children:
         parent.children.link(col)
     for piece in list(col.objects):
         col.objects.unlink(piece)
     col.hide_render = True
+    col.hide_viewport = True
     return col
+
+
+def load_file_meshes(rel_path):
+    target = norm(rel_path)
+    loaded = [obj for obj in bpy.data.objects
+              if obj.library is not None and norm(obj.library.filepath) == target]
+    with bpy.data.libraries.load(rel_path, link=True) as (src, dst):
+        existing = {obj.name for obj in loaded}
+        dst.objects = [name for name in src.objects if name not in existing]
+    for obj in dst.objects:
+        if obj is not None:
+            loaded.append(obj)
+    meshes = [obj for obj in loaded if obj.type == 'MESH']
+    parent = ensure_collection()
+    for obj in meshes:
+        if obj.name not in parent.objects:
+            parent.objects.link(obj)
+        obj.hide_render = True
+    return sorted(meshes, key=lambda o: o.name)
+
+
+def update_bobina(self, context):
+    obj = self.id_data
+    settings = obj.led_studio
+    up_bucket = role_bucket('LED Studio | Flangia up')
+    down_bucket = role_bucket('LED Studio | Flangia down')
+    if self.bobina == 'NONE':
+        set_socket(obj, 'Flangia up', None)
+        set_socket(obj, 'Flangia down', None)
+        settings.status = ''
+        return
+    rel = '//bobine/' + self.bobina
+    if not os.path.isfile(bpy.path.abspath(rel)):
+        settings.status = 'File mancante: ' + self.bobina
+        return
+    try:
+        meshes = load_file_meshes(rel)
+    except Exception as exc:
+        settings.status = str(exc)
+        return
+    found = {}
+    for piece in meshes:
+        for wanted in ('up', 'down'):
+            if wanted not in found and same_object(wanted, piece.name):
+                found[wanted] = piece
+    missing = [name for name in ('up', 'down') if name not in found]
+    if missing:
+        settings.status = 'Nel file manca: ' + ', '.join(missing)
+        return
+    up_bucket.objects.link(found['up'])
+    down_bucket.objects.link(found['down'])
+    set_socket(obj, 'Flangia up', up_bucket)
+    set_socket(obj, 'Flangia down', down_bucket)
+    settings.status = ''
+
+
+def update_pcb(self, context):
+    obj = self.id_data
+    settings = obj.led_studio
+    pcb_bucket = role_bucket('LED Studio | Modulo PCB')
+    if self.pcb == 'NONE':
+        set_socket(obj, 'Modulo PCB', None)
+        settings.status = ''
+        return
+    rel = '//pcb/' + self.pcb
+    if not os.path.isfile(bpy.path.abspath(rel)):
+        settings.status = 'File mancante: ' + self.pcb
+        return
+    try:
+        meshes = load_file_meshes(rel)
+    except Exception as exc:
+        settings.status = str(exc)
+        return
+    if not meshes:
+        settings.status = 'Nessuna mesh nel file: ' + self.pcb
+        return
+    for piece in meshes:
+        pcb_bucket.objects.link(piece)
+    set_socket(obj, 'Modulo PCB', pcb_bucket)
+    settings.status = ''
 
 
 def update_cavo(self, context):
     obj = self.id_data
     settings = obj.led_studio
+    flex = role_bucket('LED Studio | Cavo flessibile')
+    rigid = role_bucket('LED Studio | Cavo rigido')
     if self.cavo == 'NONE':
         set_socket(obj, 'Cavo flessibile', None)
         set_socket(obj, 'Connettore', None)
         settings.status = ''
         return
-    stem = self.cavo[:-6] if self.cavo.lower().endswith('.blend') else self.cavo
-    rel = '//' + 'cavi' + '/' + self.cavo
+    rel = '//cavi/' + self.cavo
     if not os.path.isfile(bpy.path.abspath(rel)):
         settings.status = 'File mancante: ' + self.cavo
         return
     try:
-        source = load_collection(rel, stem)
+        meshes = load_file_meshes(rel)
     except Exception as exc:
         settings.status = str(exc)
         return
-    if source is None:
-        settings.status = 'Nel file manca la collection: ' + stem
+    if not meshes:
+        settings.status = 'Nessuna mesh nel file: ' + self.cavo
         return
-    parent = ensure_collection()
-    if source.name not in parent.children:
-        parent.children.link(source)
-    source.hide_render = True
-    flex = role_bucket('LED Studio | Cavo flessibile')
-    rigid = role_bucket('LED Studio | Cavo rigido')
-    for piece in source.objects:
+    for piece in meshes:
         (rigid if piece.get('led_role') == 'connector' else flex).objects.link(piece)
     set_socket(obj, 'Cavo flessibile', flex)
     set_socket(obj, 'Connettore', rigid)
@@ -1335,18 +1300,20 @@ README = '''LED STUDIO — PARTENZA RAPIDA
 Blender 5.3. Tre scene, dal menu Scene in alto: 8 mm, 10 mm, RGB 12 mm.
 Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
 
-1. Le cartelle bobine, pcb e cavi stanno accanto a questo file.
-2. In bobine metti un .blend per modello. Dentro, due mesh chiamate up e down,
-   origine al centro della bobina, asse Z, transform applicati, materiali già assegnati.
+1. Le cartelle bobine, pcb e cavi stanno accanto a questo file. Il nome nei menu
+   a tendina viene ereditato direttamente dal nome del file .blend.
+2. In bobine metti un .blend per modello. Dentro (in Scene Collection o qualsiasi
+   collection), due oggetti mesh chiamati up e down, origine al centro della bobina,
+   asse Z, transform applicati, materiali già assegnati.
    up sta dal lato Z positivo, down dal lato negativo.
-3. In pcb metti un .blend per codice. L'oggetto mesh ha il nome del file
-   senza estensione, per esempio FN01234. Origine al centro del passo.
-   X è il passo lungo il nastro, Z è la larghezza, il lato LED guarda verso -Y.
-   Il modulo viene ripetuto così com'è: ogni vertice segue la curva, quindi
-   basetta e LED restano quelli del file, senza giunzione fra una copia e la successiva.
-4. In cavi metti un .blend per cavo. La collection ha il nome del file
-   senza estensione e può contenere più mesh. X è la lunghezza: il capo a
-   X minimo si attacca alla striscia, il connettore sta verso X massimo.
+3. In pcb metti un .blend per codice (es. FN01234.blend). Tutte le mesh del file
+   vengono importate direttamente senza vincoli sui nomi di oggetti o collection.
+   Origine al centro del passo: X è il passo lungo il nastro, Z è la larghezza,
+   il lato LED guarda verso -Y. Il modulo viene ripetuto così com'è: ogni vertice
+   segue la curva, senza giunzione fra una copia e la successiva.
+4. In cavi metti un .blend per cavo. Tutte le mesh del file vengono importate
+   direttamente senza vincoli sui nomi di oggetti o collection. X è la lunghezza:
+   il capo a X minimo si attacca alla striscia, il connettore sta verso X massimo.
    La sezione sta in Y e Z, il lato -Y guarda fuori dal mozzo.
    Conta la posizione di ogni oggetto: non unirli e non applicare i transform.
    Non si ripete: la misura X complessiva è il tratto.
@@ -1733,13 +1700,16 @@ def exercise_library(scene, obj, values):
     plug_mat = make_material('test cavo connettore', (.2, .2, .2), .6, .3)
     up = make_box('up', (.2, .2, .002), (0, 0, .005))
     down = make_box('down', (.2, .2, .002), (0, 0, -.005))
-    pcb = make_pcb_piece('FN01234', pcb_mat)
-    cable = make_cable('cavo bianco', cable_mat, plug_mat)
+    pcb = make_pcb_piece('modulo_generico', pcb_mat)
+    cable = make_cable('collection_qualsiasi', cable_mat, plug_mat)
     up.data.materials.append(mat)
+    bobina_col = bpy.data.collections.new('gruppo_bobina')
+    bobina_col.objects.link(up)
+    bobina_col.objects.link(down)
     bobina_path = os.path.join(temp, 'bobine', 'bobina bianca.blend')
     pcb_path = os.path.join(temp, 'pcb', 'FN01234.blend')
     cable_path = os.path.join(temp, 'cavi', 'cavo bianco.blend')
-    bpy.data.libraries.write(bobina_path, {up, up.data, down, down.data, mat}, fake_user=True)
+    bpy.data.libraries.write(bobina_path, {bobina_col, up, up.data, down, down.data, mat}, fake_user=True)
     bpy.data.libraries.write(pcb_path, {pcb, pcb.data, pcb_mat}, fake_user=True)
     cable_ids = {cable, cable_mat, plug_mat}
     for piece in cable.objects:
@@ -1751,6 +1721,7 @@ def exercise_library(scene, obj, values):
         bpy.data.objects.remove(piece, do_unlink=True)
         if data.users == 0:
             bpy.data.meshes.remove(data)
+    bpy.data.collections.remove(bobina_col)
     for piece in list(cable.objects):
         data = piece.data
         bpy.data.objects.remove(piece, do_unlink=True)
@@ -1856,7 +1827,9 @@ def exercise_library(scene, obj, values):
             local = bpy.data.materials.get(PREFIX + ' | ' + name)
             if local and local.users == 0:
                 bpy.data.materials.remove(local)
-        for bucket_name in ('LED Studio | Cavo flessibile', 'LED Studio | Cavo rigido'):
+        for bucket_name in ('LED Studio | Flangia up', 'LED Studio | Flangia down',
+                            'LED Studio | Modulo PCB', 'LED Studio | Cavo flessibile',
+                            'LED Studio | Cavo rigido'):
             bucket = bpy.data.collections.get(bucket_name)
             if bucket and not bucket.objects:
                 for parent in bpy.data.collections:
@@ -1877,7 +1850,60 @@ def exercise_library(scene, obj, values):
         shutil.rmtree(temp, ignore_errors=True)
 
 
+def upgrade_inplace():
+    """Rebuild the five Geometry Nodes groups and panel text without touching scenes, lights or cameras."""
+    if bpy.app.version < (5, 3, 0):
+        raise RuntimeError('LED Studio richiede Blender 5.3 o successivo.')
+    saved = []
+    for obj in bpy.data.objects:
+        mod = obj.modifiers.get('Configurazione prodotto')
+        if mod is None or mod.type != 'NODES' or mod.node_group is None:
+            continue
+        numeric = {}
+        for item in mod.node_group.interface.items_tree:
+            if item.item_type == 'SOCKET' and item.in_out == 'INPUT' and item.socket_type in ('NodeSocketFloat', 'NodeSocketInt', 'NodeSocketBool'):
+                val = mod.properties.inputs[item.identifier].get('value')
+                if val is not None:
+                    numeric[item.name] = val
+        saved.append((obj, mod, numeric))
+    old_groups = [g for g in bpy.data.node_groups if g.name.startswith('LED | ')]
+    for obj, mod, _numeric in saved:
+        mod.node_group = None
+    for old in old_groups:
+        old.asset_clear()
+        old.use_fake_user = False
+        bpy.data.node_groups.remove(old)
+    path = build_path()
+    strip = build_strip()
+    reel = build_reel()
+    cable = build_cable()
+    master = build_master(path, strip, reel, cable)
+    for obj, mod, numeric in saved:
+        mod.node_group = master
+        for name, val in numeric.items():
+            try:
+                set_input(mod, name, val)
+            except KeyError:
+                pass
+    replace_text('LEGGIMI - LED Studio', README)
+    replace_text('LED Studio Libreria', PANEL_SOURCE, module=True)
+    load_panel()
+    for obj, _mod, _numeric in saved:
+        if hasattr(obj, 'led_studio'):
+            if obj.led_studio.bobina != 'NONE':
+                obj.led_studio.bobina = obj.led_studio.bobina
+            if obj.led_studio.pcb != 'NONE':
+                obj.led_studio.pcb = obj.led_studio.pcb
+            if obj.led_studio.cavo != 'NONE':
+                obj.led_studio.cavo = obj.led_studio.cavo
+    bpy.ops.wm.save_mainfile()
+    print('LED Studio: nodi e pannello aggiornati in-place (%d oggetti preservati).' % len(saved))
+
+
 def main():
+    if '--' in sys.argv and '--upgrade-inplace' in sys.argv[sys.argv.index('--') + 1:]:
+        upgrade_inplace()
+        return
     if bpy.app.version < (5, 3, 0):
         raise RuntimeError('LED Studio richiede Blender 5.3 o successivo.')
     floor = make_material('fondo', (1, 1, 1), 0, .7)

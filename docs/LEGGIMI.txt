@@ -3,18 +3,20 @@ LED STUDIO — PARTENZA RAPIDA
 Blender 5.3. Tre scene, dal menu Scene in alto: 8 mm, 10 mm, RGB 12 mm.
 Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
 
-1. Le cartelle bobine, pcb e cavi stanno accanto a questo file.
-2. In bobine metti un .blend per modello. Dentro, due mesh chiamate up e down,
-   origine al centro della bobina, asse Z, transform applicati, materiali già assegnati.
+1. Le cartelle bobine, pcb e cavi stanno accanto a questo file. Il nome nei menu
+   a tendina viene ereditato direttamente dal nome del file .blend.
+2. In bobine metti un .blend per modello. Dentro (in Scene Collection o qualsiasi
+   collection), due oggetti mesh chiamati up e down, origine al centro della bobina,
+   asse Z, transform applicati, materiali già assegnati.
    up sta dal lato Z positivo, down dal lato negativo.
-3. In pcb metti un .blend per codice. L'oggetto mesh ha il nome del file
-   senza estensione, per esempio FN01234. Origine al centro del passo.
-   X è il passo lungo il nastro, Z è la larghezza, il lato LED guarda verso -Y.
-   Il modulo viene ripetuto così com'è: ogni vertice segue la curva, quindi
-   basetta e LED restano quelli del file, senza giunzione fra una copia e la successiva.
-4. In cavi metti un .blend per cavo. La collection ha il nome del file
-   senza estensione e può contenere più mesh. X è la lunghezza: il capo a
-   X minimo si attacca alla striscia, il connettore sta verso X massimo.
+3. In pcb metti un .blend per codice (es. FN01234.blend). Tutte le mesh del file
+   vengono importate direttamente senza vincoli sui nomi di oggetti o collection.
+   Origine al centro del passo: X è il passo lungo il nastro, Z è la larghezza,
+   il lato LED guarda verso -Y. Il modulo viene ripetuto così com'è: ogni vertice
+   segue la curva, senza giunzione fra una copia e la successiva.
+4. In cavi metti un .blend per cavo. Tutte le mesh del file vengono importate
+   direttamente senza vincoli sui nomi di oggetti o collection. X è la lunghezza:
+   il capo a X minimo si attacca alla striscia, il connettore sta verso X massimo.
    La sezione sta in Y e Z, il lato -Y guarda fuori dal mozzo.
    Conta la posizione di ogni oggetto: non unirli e non applicare i transform.
    Non si ripete: la misura X complessiva è il tratto.
