@@ -575,59 +575,89 @@ def build_master(path, strip, reel, cable):
     cable_len = q.math('SUBTRACT', c_hi.outputs['X'], c_lo.outputs['X'], 'Lunghezza cavo')
     span = q.node('GeometryNodeCurveLength', 'Lunghezza nastro')
     q.link(single.outputs['Curve'], span.inputs['Curve'])
-    end = q.node('GeometryNodeSampleCurve', 'Fine della striscia')
-    end.mode = 'LENGTH'
-    end.use_all_curves = True
-    q.link(single.outputs['Curve'], end.inputs['Curves'])
-    q.link(span.outputs['Length'], end.inputs['Length'])
-    end_xyz = q.node('ShaderNodeSeparateXYZ')
-    q.link(end.outputs['Position'], end_xyz.inputs['Vector'])
-    end_tan = q.vmath('NORMALIZE', end.outputs['Tangent'], label='Tangente finale')
-    end_rad = q.vmath('NORMALIZE', q.vec(end_xyz.outputs['X'], end_xyz.outputs['Y'], 0), label='Radiale finale')
-    radius0 = q.vmath('LENGTH', q.vec(end_xyz.outputs['X'], end_xyz.outputs['Y'], 0), label='Raggio finale')
-    drds = q.vmath('DOT_PRODUCT', end_tan, end_rad, 'Apertura')
-    spin = q.node('ShaderNodeSeparateXYZ')
-    q.link(q.vmath('CROSS_PRODUCT', end_rad, end_tan, 'Giro'), spin.inputs['Vector'])
-    omega = q.math('DIVIDE', spin.outputs['Z'], q.math('MAXIMUM', radius0, .001), 'Velocità angolare')
-    angle0 = q.math('ARCTAN2', end_xyz.outputs['Y'], end_xyz.outputs['X'], 'Angolo finale')
-    step = q.math('DIVIDE', q.node('GeometryNodeInputIndex').outputs['Index'], 127)
-    distance = q.math('MULTIPLY', step, cable_len, 'Distanza sul cavo')
-    angle = q.math('ADD', angle0, q.math('MULTIPLY', omega, distance))
-    radius = q.math('ADD', radius0, q.math('MULTIPLY', drds, distance))
-    tail = q.node('GeometryNodeMeshLine', 'Prolungamento')
+    # Same spiral as group 01, continued past the end of the strip.
+    giri = p['Giri uscita']
+    last_even = q.compare(q.math('FLOORED_MODULO', q.math('SUBTRACT', livelli, 1), 2), 0, label='Ultimo pari')
+    t_end = q.node('GeometryNodeSwitch', 'Parametro finale')
+    t_end.input_type = 'FLOAT'
+    q.link(last_even, t_end.inputs['Switch'])
+    q.link(q.math('ADD', turns, giri), t_end.inputs['True'])
+    t_end.inputs['False'].default_value = 0.0
+    z_last = q.math('ADD', q.math('ADD', q.math('MULTIPLY', p['Altezza bobina'], -.5), margin),
+                    q.math('ADD', q.math('MULTIPLY', larghezza, .5),
+                           q.math('MULTIPLY', q.math('SUBTRACT', livelli, 1), larghezza)),
+                    'Quota ultimo livello')
+    extra = 4.0
+    along = q.math('DIVIDE', q.node('GeometryNodeInputIndex').outputs['Index'], 255)
+    outward_t = q.math('ADD', t_end.outputs['Output'], q.math('MULTIPLY', along, extra))
+    inward_t = q.math('MULTIPLY', q.math('MULTIPLY', along, extra), -1)
+    t_tail = q.node('GeometryNodeSwitch', 'Verso di uscita')
+    t_tail.input_type = 'FLOAT'
+    q.link(last_even, t_tail.inputs['Switch'])
+    q.link(outward_t, t_tail.inputs['True'])
+    q.link(inward_t, t_tail.inputs['False'])
+    past = q.math('MAXIMUM', q.math('SUBTRACT', t_tail.outputs['Output'], turns), 0)
+    expansion = q.math('MULTIPLY', p['Apertura uscita'],
+                       q.math('POWER', q.math('DIVIDE', past, q.math('MAXIMUM', giri, .001)), 2))
+    radius = q.math('ADD', q.math('ADD', p['Raggio mozzo'],
+                                  q.math('MULTIPLY', t_tail.outputs['Output'], p['Passo radiale'])),
+                    expansion)
+    angle = q.math('MULTIPLY', t_tail.outputs['Output'], 2 * math.pi)
+    tail = q.node('GeometryNodeMeshLine', 'Prolungamento della spirale')
     tail.mode = 'OFFSET'
-    tail.inputs['Count'].default_value = 128
-    tail_pos = q.node('GeometryNodeSetPosition', 'Stessa tangente e apertura')
+    tail.inputs['Count'].default_value = 256
+    tail_pos = q.node('GeometryNodeSetPosition', 'Stessa spirale')
     q.link(tail.outputs['Mesh'], tail_pos.inputs['Geometry'])
     q.link(q.vec(q.math('MULTIPLY', radius, q.math('COSINE', angle)),
                  q.math('MULTIPLY', radius, q.math('SINE', angle)),
-                 end_xyz.outputs['Z']), tail_pos.inputs['Position'])
-    tail_curve = q.node('GeometryNodeMeshToCurve', 'Curva del cavo')
+                 z_last), tail_pos.inputs['Position'])
+    tail_curve = q.node('GeometryNodeMeshToCurve', 'Curva del prolungamento')
     tail_curve.mode = 'EDGES'
     q.link(tail_pos.outputs['Geometry'], tail_curve.inputs['Mesh'])
-    origin = q.node('GeometryNodeSampleCurve', 'Capo del prolungamento')
-    origin.mode = 'FACTOR'
-    origin.use_all_curves = True
-    q.link(tail_curve.outputs['Curve'], origin.inputs['Curves'])
-    origin.inputs['Factor'].default_value = 0
-    turned = q.vmath('LENGTH', q.vmath('SUBTRACT', origin.outputs['Position'], end.outputs['Position']),
-                     label='Curva rovesciata')
-    tail_rev = q.node('GeometryNodeReverseCurve', 'Capo verso la striscia')
-    q.link(tail_curve.outputs['Curve'], tail_rev.inputs['Curve'])
-    q.link(q.math('GREATER_THAN', turned, .001), tail_rev.inputs['Selection'])
+    trimmed = q.node('GeometryNodeTrimCurve', 'Solo la lunghezza del cavo')
+    trimmed.mode = 'LENGTH'
+    q.link(tail_curve.outputs['Curve'], trimmed.inputs['Curve'])
+    trimmed.inputs['Start'].default_value = 0.0
+    q.link(cable_len, trimmed.inputs['End'])
+    joined = q.join(single.outputs['Curve'], trimmed.outputs['Curve'])
+    lead_edges = q.node('GeometryNodeCurveToMesh', 'Striscia e cavo in spigoli')
+    q.link(joined, lead_edges.inputs['Curve'])
+    lead_weld = q.node('GeometryNodeMergeByDistance', 'Una sola curva')
+    q.link(lead_edges.outputs['Mesh'], lead_weld.inputs['Geometry'])
+    lead_weld.inputs['Mode'].default_value = 'All'
+    lead_weld.inputs['Distance'].default_value = .00001
+    lead_curve = q.node('GeometryNodeMeshToCurve', 'Percorso unico con il cavo')
+    lead_curve.mode = 'EDGES'
+    q.link(lead_weld.outputs['Geometry'], lead_curve.inputs['Mesh'])
+    start_strip = q.node('GeometryNodeSampleCurve', 'Inizio nastro')
+    start_strip.mode = 'FACTOR'
+    start_strip.use_all_curves = True
+    q.link(single.outputs['Curve'], start_strip.inputs['Curves'])
+    start_strip.inputs['Factor'].default_value = 0.0
+    start_lead = q.node('GeometryNodeSampleCurve', 'Inizio curva unica')
+    start_lead.mode = 'FACTOR'
+    start_lead.use_all_curves = True
+    q.link(lead_curve.outputs['Curve'], start_lead.inputs['Curves'])
+    start_lead.inputs['Factor'].default_value = 0.0
+    flipped = q.vmath('LENGTH', q.vmath('SUBTRACT', start_lead.outputs['Position'], start_strip.outputs['Position']),
+                      label='Curva rovesciata')
+    lead_rev = q.node('GeometryNodeReverseCurve', 'Inizio dalla striscia')
+    q.link(lead_curve.outputs['Curve'], lead_rev.inputs['Curve'])
+    q.link(q.math('GREATER_THAN', flipped, .001), lead_rev.inputs['Selection'])
     lead_pos = q.node('GeometryNodeInputPosition')
     lead_xy = q.node('ShaderNodeSeparateXYZ')
     q.link(lead_pos.outputs['Position'], lead_xy.inputs['Vector'])
     lead_out = q.node('ShaderNodeVectorMath', 'Esterno sul cavo')
     lead_out.operation = 'NORMALIZE'
     q.link(q.vec(lead_xy.outputs['X'], lead_xy.outputs['Y'], 0), lead_out.inputs[0])
-    lead_normal = q.node('GeometryNodeSetCurveNormal', 'Normale del cavo')
-    q.link(tail_rev.outputs['Curve'], lead_normal.inputs['Curve'])
+    lead_normal = q.node('GeometryNodeSetCurveNormal', 'Normale della curva unica')
+    q.link(lead_rev.outputs['Curve'], lead_normal.inputs['Curve'])
     lead_normal.inputs['Mode'].default_value = 'Free'
     q.link(lead_out.outputs['Vector'], lead_normal.inputs['Normal'])
     cable_node = q.call(cable, '04 Cavo')
     q.link(lead_normal.outputs['Curve'], cable_node.inputs['Curva'])
     q.link(p['Cavo'], cable_node.inputs['Cavo'])
+    q.link(span.outputs['Length'], cable_node.inputs['Inizio'])
     reel_node = q.call(reel, '03 Bobina')
     for name in ('Flangia up', 'Flangia down', 'Raggio mozzo', 'Altezza bobina'):
         q.link(p[name], reel_node.inputs[name])
