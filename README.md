@@ -10,9 +10,12 @@ Repository di codice con knowledge graph graphify per navigazione e bootstrap ag
 
 ## Struttura
 
+- `archivio/`
 - `bobine/`
 - `cavi/`
+- `docs/`
 - `pcb/`
+- `scripts/`
 
 ## Script nel pannello (root)
 
@@ -33,6 +36,6 @@ _Vedi struttura cartelle sopra._
 - Rigenera README: `generate-readme.ps1 -Force`
 - Bootstrap: `ensure-bootstrap.ps1`
 
-- 171 nodes · 348 edges · 7 communities (6 shown, 1 thin omitted)
+- 95 nodes · 185 edges · 13 communities (7 shown, 6 thin omitted)
 - Report: LED_Studio_Starter (2026-11-13)
-- Git commit: `ba8826e`
+- Git commit: `da9926b`

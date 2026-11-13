@@ -13,6 +13,9 @@ graphify-out/obsidian/
 *.blend1
 graphify-out/20*/
 
+# archivio locale — originali, zip e backup, mai versionare
+/archivio/
+
 # segreti — mai versionare
 .env
 .env.*

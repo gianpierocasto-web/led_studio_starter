@@ -1,6 +1,6 @@
 """LED Studio — Geometry Nodes starter, Blender 5.3+. Run from Text Editor.
 Creates a NEW scene for each preset. Existing scenes and objects are retained.
-CLI: blender -b --python led_starter.py -- --output /absolute/path/LED_Studio.blend
+CLI: blender -b --python scripts/led_starter.py -- --output /absolute/path/LED_Studio.blend
 
 Coil and PCB geometry come from .blend files in ./bobine and ./pcb.
 The embedded text "LED Studio Libreria" registers the modifier panel on file load.
@@ -1378,7 +1378,7 @@ Gruppi: 00 Prodotto completo; 01 Percorso spirale e uscita;
 IMPORTAZIONE: File > Append > LED_Studio.blend > Collection > Prodotto | ...
 Il pannello legge le cartelle accanto al file in cui lavori.
 
-SCRIPT: eseguire led_starter.py dal Text Editor crea nuove scene, senza
+SCRIPT: eseguire scripts/led_starter.py dal Text Editor crea nuove scene, senza
 cancellare quelle esistenti. Ripetere lo script crea altre copie, non aggiorna.
 Lo script non salva automaticamente il progetto aperto.
 '''

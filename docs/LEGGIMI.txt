@@ -46,6 +46,6 @@ Gruppi: 00 Prodotto completo; 01 Percorso spirale e uscita;
 IMPORTAZIONE: File > Append > LED_Studio.blend > Collection > Prodotto | ...
 Il pannello legge le cartelle accanto al file in cui lavori.
 
-SCRIPT: eseguire led_starter.py dal Text Editor crea nuove scene, senza
+SCRIPT: eseguire scripts/led_starter.py dal Text Editor crea nuove scene, senza
 cancellare quelle esistenti. Ripetere lo script crea altre copie, non aggiorna.
 Lo script non salva automaticamente il progetto aperto.
