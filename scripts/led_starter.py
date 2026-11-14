@@ -338,10 +338,16 @@ def build_strip():
     q.link(placed.outputs['Geometry'], weld.inputs['Geometry'])
     weld.inputs['Mode'].default_value = 'All'
     weld.inputs['Distance'].default_value = .00001
+    edge_ang = q.node('GeometryNodeInputMeshEdgeAngle', 'Angolo spigoli')
+    sharp = q.node('GeometryNodeSetShadeSmooth', 'Spigoli vivi oltre 35 gradi')
+    sharp.domain = 'EDGE'
+    sharp.inputs['Shade Smooth'].default_value = False
+    q.link(weld.outputs['Geometry'], sharp.inputs['Geometry'])
+    q.link(q.math('GREATER_THAN', edge_ang.outputs['Unsigned Angle'], math.radians(35)), sharp.inputs['Selection'])
     out = q.node('GeometryNodeSwitch', 'Solo con un PCB scelto')
     out.input_type = 'GEOMETRY'
     q.link(has_module, out.inputs['Switch'])
-    q.link(weld.outputs['Geometry'], out.inputs['True'])
+    q.link(sharp.outputs['Geometry'], out.inputs['True'])
     return q.finish(out.outputs['Output'])
 
 
@@ -634,12 +640,40 @@ def build_reel():
 
     def flange(socket_name, sign):
         flange_geo = realize_collection(q, p[socket_name], socket_name)
+        pos = q.node('GeometryNodeInputPosition')
+        sep_p = q.node('ShaderNodeSeparateXYZ')
+        q.link(pos.outputs['Position'], sep_p.inputs['Vector'])
+        rad = q.vmath('LENGTH', q.vec(sep_p.outputs['X'], sep_p.outputs['Y'], 0), label='Raggio punto')
+        r_stat = q.node('GeometryNodeAttributeStatistic', 'Raggio max flangia')
+        r_stat.data_type = 'FLOAT'
+        r_stat.domain = 'POINT'
+        q.link(flange_geo, r_stat.inputs['Geometry'])
+        q.link(rad, r_stat.inputs['Attribute'])
+        on_disk = q.math('GREATER_THAN', rad, q.math('MULTIPLY', r_stat.outputs['Max'], .45))
+        disk_geo = q.node('GeometryNodeSeparateGeometry', 'Disco flangia')
+        disk_geo.domain = 'POINT'
+        q.link(flange_geo, disk_geo.inputs['Geometry'])
+        q.link(on_disk, disk_geo.inputs['Selection'])
+        disk_cnt = q.node('GeometryNodeAttributeDomainSize', 'Punti disco')
+        disk_cnt.component = 'MESH'
+        q.link(disk_geo.outputs['Selection'], disk_cnt.inputs['Geometry'])
+        z_stat = q.node('GeometryNodeAttributeStatistic', 'Quota disco')
+        z_stat.data_type = 'FLOAT'
+        z_stat.domain = 'POINT'
+        q.link(flange_geo, z_stat.inputs['Geometry'])
+        q.link(on_disk, z_stat.inputs['Selection'])
+        q.link(sep_p.outputs['Z'], z_stat.inputs['Attribute'])
         box = q.node('GeometryNodeBoundBox')
         q.link(flange_geo, box.inputs['Geometry'])
         sep = q.node('ShaderNodeSeparateXYZ')
         q.link(box.outputs['Min'] if sign > 0 else box.outputs['Max'], sep.inputs['Vector'])
+        z_ref = q.node('GeometryNodeSwitch', 'Appoggio flangia')
+        z_ref.input_type = 'FLOAT'
+        q.link(q.math('GREATER_THAN', disk_cnt.outputs['Point Count'], 0), z_ref.inputs['Switch'])
+        q.link(sep.outputs['Z'], z_ref.inputs['False'])
+        q.link(z_stat.outputs['Min'] if sign > 0 else z_stat.outputs['Max'], z_ref.inputs['True'])
         half = q.math('MULTIPLY', p['Altezza bobina'], .5 * sign)
-        moved = q.transform(flange_geo, q.vec(0, 0, q.math('SUBTRACT', half, sep.outputs['Z'])))
+        moved = q.transform(flange_geo, q.vec(0, 0, q.math('SUBTRACT', half, z_ref.outputs['Output'])))
         return moved, flange_geo
 
     up, up_geo = flange('Flangia up', 1)
@@ -1031,6 +1065,8 @@ def setup_scene(name, group, values, floor_mat):
 
 
 PANEL_SOURCE = r'''import bpy
+import bmesh
+import math
 import os
 
 LIBRARY = 'LED Studio | Libreria'
@@ -1099,10 +1135,22 @@ def set_socket(obj, name, value):
 
 
 def same_object(wanted, linked_name):
-    if linked_name == wanted:
+    low_wanted = wanted.lower()
+    low_name = linked_name.lower()
+    if low_name == low_wanted:
         return True
-    prefix = wanted + '.'
-    return linked_name.startswith(prefix) and linked_name[len(prefix):].isdigit()
+    prefix = low_wanted + '.'
+    return low_name.startswith(prefix) and low_name[len(prefix):].isdigit()
+
+
+def get_socket(obj, name, default=None):
+    mod = modifier_of(obj)
+    if mod is None:
+        return default
+    for item in mod.node_group.interface.items_tree:
+        if item.item_type == 'SOCKET' and item.in_out == 'INPUT' and item.name == name:
+            return mod.properties.inputs[item.identifier].get('value', default)
+    return default
 
 
 def ensure_collection():
@@ -1110,6 +1158,8 @@ def ensure_collection():
     if col is None:
         col = bpy.data.collections.new(LIBRARY)
     for scene in bpy.data.scenes:
+        if scene.library is not None:
+            continue
         if col.name not in scene.collection.children:
             scene.collection.children.link(col)
     col.hide_render = True
@@ -1126,28 +1176,232 @@ def role_bucket(name):
         parent.children.link(col)
     for piece in list(col.objects):
         col.objects.unlink(piece)
+        if piece.library is None and piece.name.startswith('LED Studio | Consolidato '):
+            data = piece.data
+            bpy.data.objects.remove(piece, do_unlink=True)
+            if data is not None and data.users == 0:
+                bpy.data.meshes.remove(data)
     col.hide_render = True
     col.hide_viewport = True
     return col
 
 
-def load_file_meshes(rel_path):
+def is_renderable_mesh(obj, pre_hidden=None):
+    if obj is None or obj.type != 'MESH':
+        return False
+    was_hidden = pre_hidden.get(obj.name, obj.hide_render) if pre_hidden is not None else obj.hide_render
+    return (not was_hidden and not obj.hide_viewport
+            and obj.display_type not in ('WIRE', 'BOUNDS'))
+
+
+def link_blend_assets(rel_path, reload_lib=False):
     target = norm(rel_path)
-    loaded = [obj for obj in bpy.data.objects
-              if obj.library is not None and norm(obj.library.filepath) == target]
+    if reload_lib:
+        for lib in list(bpy.data.libraries):
+            if norm(lib.filepath) == target:
+                lib.reload()
+    def from_target(items):
+        return [x for x in items if x.library is not None and norm(x.library.filepath) == target]
+
+    pre_hidden = {o.name: bool(o.hide_render) for o in from_target(bpy.data.objects)}
     with bpy.data.libraries.load(rel_path, link=True) as (src, dst):
-        existing = {obj.name for obj in loaded}
-        dst.objects = [name for name in src.objects if name not in existing]
-    for obj in dst.objects:
-        if obj is not None:
-            loaded.append(obj)
-    meshes = [obj for obj in loaded if obj.type == 'MESH']
+        ex_o = set(pre_hidden.keys())
+        ex_c = {c.name for c in from_target(bpy.data.collections)}
+        ex_s = {s.name for s in from_target(bpy.data.scenes)}
+        dst.objects = [n for n in src.objects if n not in ex_o]
+        dst.collections = [n for n in src.collections if n not in ex_c]
+        dst.scenes = [n for n in src.scenes if n not in ex_s]
+    for o in dst.objects:
+        if o is not None:
+            pre_hidden[o.name] = bool(o.hide_render)
+    loaded_objs = from_target(bpy.data.objects)
+    loaded_cols = from_target(bpy.data.collections)
+    loaded_scenes = from_target(bpy.data.scenes)
+
+    visible = set()
+    if loaded_scenes:
+        for sc in loaded_scenes:
+            if not sc.view_layers:
+                continue
+            root_lc = sc.view_layers[0].layer_collection
+            if root_lc is None:
+                continue
+            def walk(lc):
+                if lc.exclude or lc.hide_viewport or lc.collection.hide_viewport or lc.collection.hide_render:
+                    return
+                for o in lc.collection.objects:
+                    if is_renderable_mesh(o, pre_hidden):
+                        visible.add(o)
+                for ch in lc.children:
+                    walk(ch)
+            walk(root_lc)
+    if not visible:
+        for o in loaded_objs:
+            if is_renderable_mesh(o, pre_hidden):
+                visible.add(o)
+
     parent = ensure_collection()
-    for obj in meshes:
-        if obj.name not in parent.objects:
-            parent.objects.link(obj)
-        obj.hide_render = True
-    return sorted(meshes, key=lambda o: o.name)
+    parent.hide_viewport = False
+    existing_ptrs = set(parent.objects)
+    for o in loaded_objs:
+        if o not in existing_ptrs:
+            parent.objects.link(o)
+            existing_ptrs.add(o)
+    parent.hide_render = True
+    bpy.context.view_layer.update()
+    return sorted(visible, key=lambda o: o.name), loaded_cols
+
+
+def hide_library_in_viewport():
+    col = bpy.data.collections.get(LIBRARY)
+    if col is not None:
+        col.hide_render = True
+        col.hide_viewport = True
+
+
+def bake_finished_mesh(objs, bucket, label, slice_step=None, align_ends=False):
+    if not objs:
+        return None
+    bpy.context.view_layer.update()
+    deps = bpy.context.evaluated_depsgraph_get()
+    bm = bmesh.new()
+    mats = []
+    mat_map = {}
+    uv_layer = bm.loops.layers.uv.new('UVMap')
+    sharp_edges = bm.edges.layers.int.get('sharp_edge')
+    if sharp_edges is None:
+        sharp_edges = bm.edges.layers.int.new('sharp_edge')
+    for o in sorted(objs, key=lambda x: x.name):
+        ev = o.evaluated_get(deps)
+        me = ev.to_mesh()
+        if not len(me.vertices):
+            ev.to_mesh_clear()
+            continue
+        if not o.matrix_world.is_identity or len(o.location) == 3:
+            mw = o.matrix_world if any(abs(o.matrix_world[r][c] - (1.0 if r == c else 0.0)) > 1e-6 for r in range(4) for c in range(4)) else o.matrix_basis
+            me.transform(mw)
+        src_mats = [bpy.data.materials.get((mt.name, mt.library.filepath) if mt.library else mt.name) if mt else None
+                    for mt in me.materials]
+        l2g = {}
+        has_valid = any(mt is not None for mt in src_mats)
+        for idx, mt in enumerate(src_mats):
+            if mt is None:
+                continue
+            key = (mt.name, mt.library.filepath if mt.library else '')
+            if key not in mat_map:
+                mat_map[key] = len(mats)
+                mats.append(mt)
+            l2g[idx] = mat_map[key]
+        old_faces = len(bm.faces)
+        old_edges = len(bm.edges)
+        bm.from_mesh(me)
+        bm.faces.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        src_sharp = me.attributes.get('sharp_edge')
+        if src_sharp is not None and src_sharp.domain == 'EDGE':
+            for ei, ed in enumerate(bm.edges[old_edges:]):
+                ed[sharp_edges] = 1 if src_sharp.data[ei].value else 0
+        src_uv = me.uv_layers.active.data if me.uv_layers.active else None
+        for fi, f in enumerate(bm.faces[old_faces:]):
+            poly = me.polygons[fi]
+            f.material_index = l2g.get(poly.material_index, 0) if has_valid else 0
+            f.smooth = poly.use_smooth
+            if src_uv:
+                for li, loop in enumerate(f.loops):
+                    loop[uv_layer].uv = src_uv[poly.loop_start + li].uv
+        ev.to_mesh_clear()
+
+    if not len(bm.verts):
+        bm.free()
+        return None
+
+    if align_ends and len(bm.verts):
+        # Snap open profile loops at the two ends of each spanning island to one clean X plane
+        xs_all = [v.co.x for v in bm.verts]
+        g_min_x, g_max_x = min(xs_all), max(xs_all)
+        g_span = g_max_x - g_min_x
+        if g_span > 1e-4:
+            bm.verts.index_update()
+            seen_v = set()
+            snap_lo = []
+            snap_hi = []
+            for v in bm.verts:
+                if v.index in seen_v:
+                    continue
+                comp = []
+                stack = [v]
+                while stack:
+                    cur = stack.pop()
+                    if cur.index in seen_v:
+                        continue
+                    seen_v.add(cur.index)
+                    comp.append(cur)
+                    for ed in cur.link_edges:
+                        stack.append(ed.other_vert(cur))
+                c_xs = [cv.co.x for cv in comp]
+                c_min, c_max = min(c_xs), max(c_xs)
+                if (c_max - c_min) > g_span * 0.96:
+                    snap_lo.append((comp, c_min))
+                    snap_hi.append((comp, c_max))
+            if snap_lo:
+                target_lo = max(c_min for _comp, c_min in snap_lo)
+                target_hi = min(c_max for _comp, c_max in snap_hi)
+                if target_hi > target_lo + g_span * 0.90:
+                    for comp, c_min in snap_lo:
+                        for cv in comp:
+                            if cv.co.x < c_min + 2e-4:
+                                cv.co.x = target_lo
+                    for comp, c_max in snap_hi:
+                        for cv in comp:
+                            if cv.co.x > c_max - 2e-4:
+                                cv.co.x = target_hi
+                    for v in bm.verts:
+                        if v.co.x < target_lo:
+                            v.co.x = target_lo
+                        elif v.co.x > target_hi:
+                            v.co.x = target_hi
+
+    if slice_step and slice_step > 1e-5:
+        xs = [v.co.x for v in bm.verts]
+        min_x, max_x = min(xs), max(xs)
+        n_cuts = min(int(math.ceil((max_x - min_x) / slice_step)), 400)
+        for k in range(1, n_cuts):
+            px = min_x + k * slice_step
+            if px >= max_x - 1e-4:
+                break
+            geom = set()
+            for e in bm.edges:
+                x0, x1 = e.verts[0].co.x, e.verts[1].co.x
+                if min(x0, x1) < px - 1e-6 and max(x0, x1) > px + 1e-6 and abs(x1 - x0) > slice_step * 1.15:
+                    geom.add(e)
+                    for f in e.link_faces:
+                        geom.add(f)
+                        for fe in f.edges:
+                            geom.add(fe)
+                            geom.add(fe.verts[0])
+                            geom.add(fe.verts[1])
+            if geom:
+                bmesh.ops.bisect_plane(bm, geom=list(geom), plane_co=(px, 0, 0), plane_no=(1, 0, 0))
+        ngons = [f for f in bm.faces if len(f.verts) > 4]
+        if ngons:
+            bmesh.ops.triangulate(bm, faces=ngons)
+        bmesh.ops.dissolve_degenerate(bm, dist=1e-6, edges=bm.edges)
+
+    mesh_name = 'LED Studio | Consolidato ' + label
+    out_me = bpy.data.meshes.new(mesh_name)
+    bm.to_mesh(out_me)
+    bm.free()
+    if 'custom_normal' in out_me.attributes:
+        out_me.attributes.remove(out_me.attributes['custom_normal'])
+    for mt in mats:
+        out_me.materials.append(mt)
+    out_me.update()
+    out_obj = bpy.data.objects.new(mesh_name, out_me)
+    out_obj.hide_render = True
+    out_obj.hide_viewport = False
+    bucket.objects.link(out_obj)
+    hide_library_in_viewport()
+    return out_obj
 
 
 def update_bobina(self, context):
@@ -1165,21 +1419,44 @@ def update_bobina(self, context):
         settings.status = 'File mancante: ' + self.bobina
         return
     try:
-        meshes = load_file_meshes(rel)
+        vis_meshes, cols = link_blend_assets(rel)
     except Exception as exc:
         settings.status = str(exc)
         return
-    found = {}
-    for piece in meshes:
+    vis_set = set(vis_meshes)
+    found = {'up': [], 'down': []}
+    for col in cols:
         for wanted in ('up', 'down'):
-            if wanted not in found and same_object(wanted, piece.name):
-                found[wanted] = piece
-    missing = [name for name in ('up', 'down') if name not in found]
+            if not found[wanted] and same_object(wanted, col.name):
+                col_vis = [o for o in col.all_objects if o in vis_set]
+                if not col_vis:
+                    col_vis = [o for o in col.all_objects if is_renderable_mesh(o)]
+                found[wanted] = col_vis
+    for wanted in ('up', 'down'):
+        if not found[wanted]:
+            for piece in vis_meshes:
+                if same_object(wanted, piece.name):
+                    found[wanted].append(piece)
+    missing = [name for name in ('up', 'down') if not found[name]]
     if missing:
-        settings.status = 'Nel file manca: ' + ', '.join(missing)
+        settings.status = 'Nel file manca la collection (o mesh): ' + ', '.join(missing)
         return
-    up_bucket.objects.link(found['up'])
-    down_bucket.objects.link(found['down'])
+    # Ensure physical Z side matches up (+Z) and down (-Z) even if swapped in source file
+    deps = bpy.context.evaluated_depsgraph_get()
+    def mean_z(pieces):
+        zs = []
+        for p_obj in pieces:
+            ev = p_obj.evaluated_get(deps)
+            me = ev.to_mesh()
+            if len(me.vertices):
+                pts = [p_obj.matrix_world @ v.co for v in me.vertices]
+                zs.append(0.5 * (min(p.z for p in pts) + max(p.z for p in pts)))
+            ev.to_mesh_clear()
+        return sum(zs) / len(zs) if zs else 0.0
+    if mean_z(found['up']) < mean_z(found['down']) - 1e-5:
+        found['up'], found['down'] = found['down'], found['up']
+    bake_finished_mesh(found['up'], up_bucket, 'Flangia up', slice_step=None)
+    bake_finished_mesh(found['down'], down_bucket, 'Flangia down', slice_step=None)
     set_socket(obj, 'Flangia up', up_bucket)
     set_socket(obj, 'Flangia down', down_bucket)
     settings.status = ''
@@ -1198,15 +1475,17 @@ def update_pcb(self, context):
         settings.status = 'File mancante: ' + self.pcb
         return
     try:
-        meshes = load_file_meshes(rel)
+        vis_meshes, _cols = link_blend_assets(rel)
     except Exception as exc:
         settings.status = str(exc)
         return
-    if not meshes:
-        settings.status = 'Nessuna mesh nel file: ' + self.pcb
+    if not vis_meshes:
+        settings.status = 'Nessuna mesh visibile nel file: ' + self.pcb
         return
-    for piece in meshes:
-        pcb_bucket.objects.link(piece)
+    baked = bake_finished_mesh(vis_meshes, pcb_bucket, 'PCB', slice_step=.002, align_ends=True)
+    if baked is None:
+        settings.status = 'Geometria PCB vuota: ' + self.pcb
+        return
     set_socket(obj, 'Modulo PCB', pcb_bucket)
     settings.status = ''
 
@@ -1226,18 +1505,50 @@ def update_cavo(self, context):
         settings.status = 'File mancante: ' + self.cavo
         return
     try:
-        meshes = load_file_meshes(rel)
+        vis_meshes, _cols = link_blend_assets(rel)
     except Exception as exc:
         settings.status = str(exc)
         return
-    if not meshes:
-        settings.status = 'Nessuna mesh nel file: ' + self.cavo
+    if not vis_meshes:
+        settings.status = 'Nessuna mesh visibile nel file: ' + self.cavo
         return
-    for piece in meshes:
-        (rigid if piece.get('led_role') == 'connector' else flex).objects.link(piece)
+    step = float(get_socket(obj, 'Passo deformazione cavo', .001) or .001)
+    flex_objs = [p for p in vis_meshes if p.get('led_role') != 'connector']
+    rigid_objs = [p for p in vis_meshes if p.get('led_role') == 'connector']
+    if flex_objs:
+        bake_finished_mesh(flex_objs, flex, 'Cavo flessibile', slice_step=max(step, .0004))
+    for idx, r_obj in enumerate(rigid_objs):
+        bake_finished_mesh([r_obj], rigid, 'Connettore %d' % idx, slice_step=None)
     set_socket(obj, 'Cavo flessibile', flex)
     set_socket(obj, 'Connettore', rigid)
     settings.status = ''
+
+
+class LED_OT_reload_assets(bpy.types.Operator):
+    bl_idname = 'led_studio.reload_assets'
+    bl_label = 'Ricarica asset'
+    bl_description = 'Rilegge i file .blend scelti e ricalcola modificatori e mesh finite'
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        return obj is not None and modifier_of(obj) is not None
+
+    def execute(self, context):
+        obj = context.object
+        st = obj.led_studio
+        for folder, fname in (('bobine', st.bobina), ('pcb', st.pcb), ('cavi', st.cavo)):
+            if fname != 'NONE':
+                rel = '//' + folder + '/' + fname
+                if os.path.isfile(bpy.path.abspath(rel)):
+                    link_blend_assets(rel, reload_lib=True)
+        if st.bobina != 'NONE':
+            st.bobina = st.bobina
+        if st.pcb != 'NONE':
+            st.pcb = st.pcb
+        if st.cavo != 'NONE':
+            st.cavo = st.cavo
+        return {'FINISHED'}
 
 
 class LEDStudioSettings(bpy.types.PropertyGroup):
@@ -1265,6 +1576,7 @@ class LED_PT_library(bpy.types.Panel):
         layout.prop(settings, 'bobina')
         layout.prop(settings, 'pcb')
         layout.prop(settings, 'cavo')
+        layout.operator('led_studio.reload_assets', icon='FILE_REFRESH')
         if settings.status:
             layout.label(text=settings.status, icon='ERROR')
         root = bpy.path.abspath('//')
@@ -1274,6 +1586,8 @@ class LED_PT_library(bpy.types.Panel):
 
 
 def register():
+    if not hasattr(bpy.types, 'LED_OT_reload_assets'):
+        bpy.utils.register_class(LED_OT_reload_assets)
     if not hasattr(bpy.types, 'LEDStudioSettings'):
         bpy.utils.register_class(LEDStudioSettings)
     if not hasattr(bpy.types, 'LED_PT_library'):
@@ -1289,6 +1603,8 @@ def unregister():
         bpy.utils.unregister_class(LED_PT_library)
     if hasattr(bpy.types, 'LEDStudioSettings'):
         bpy.utils.unregister_class(LEDStudioSettings)
+    if hasattr(bpy.types, 'LED_OT_reload_assets'):
+        bpy.utils.unregister_class(LED_OT_reload_assets)
 
 
 register()
@@ -1302,21 +1618,16 @@ Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
 
 1. Le cartelle bobine, pcb e cavi stanno accanto a questo file. Il nome nei menu
    a tendina viene ereditato direttamente dal nome del file .blend.
-2. In bobine metti un .blend per modello. Dentro (in Scene Collection o qualsiasi
-   collection), due oggetti mesh chiamati up e down, origine al centro della bobina,
-   asse Z, transform applicati, materiali già assegnati.
-   up sta dal lato Z positivo, down dal lato negativo.
-3. In pcb metti un .blend per codice (es. FN01234.blend). Tutte le mesh del file
-   vengono importate direttamente senza vincoli sui nomi di oggetti o collection.
-   Origine al centro del passo: X è il passo lungo il nastro, Z è la larghezza,
-   il lato LED guarda verso -Y. Il modulo viene ripetuto così com'è: ogni vertice
-   segue la curva, senza giunzione fra una copia e la successiva.
-4. In cavi metti un .blend per cavo. Tutte le mesh del file vengono importate
-   direttamente senza vincoli sui nomi di oggetti o collection. X è la lunghezza:
-   il capo a X minimo si attacca alla striscia, il connettore sta verso X massimo.
-   La sezione sta in Y e Z, il lato -Y guarda fuori dal mozzo.
-   Conta la posizione di ogni oggetto: non unirli e non applicare i transform.
-   Non si ripete: la misura X complessiva è il tratto.
+2. In bobine metti un .blend per modello. Dentro, due collection chiamate up e down
+   (con dentro quante mesh vuoi e con qualunque nome), asse Z al centro della bobina.
+   Lo script separa i dischi flangia in base ad Altezza bobina.
+3. In pcb metti un .blend per codice (es. FN01234.blend o FN04950.blend). Puoi usare
+   più oggetti e modificatori (Boolean, Array, Subdivision...): all'importazione
+   vengono valutati in una mesh finita suddivisa lungo X, ignorando cutter wireframe
+   e collection escluse/nascoste. X è il passo, Z la larghezza, -Y verso l'esterno.
+4. In cavi metti un .blend per cavo. Anche qui modificatori e più oggetti sono
+   consentiti e consolidati all'importazione. X è la lunghezza: il capo a X minimo
+   si attacca alla striscia, il connettore sta verso X massimo.
    Un oggetto con led_role = connector resta rigido; gli altri seguono la curva.
 5. Seleziona LED_... Se il pannello non compare, abilita Auto Run Python Scripts
    oppure esegui una volta il testo LED Studio Libreria.
@@ -1728,6 +2039,73 @@ def exercise_library(scene, obj, values):
         if data.users == 0:
             bpy.data.meshes.remove(data)
     bpy.data.collections.remove(cable)
+    # Second synthetic library: collection-based bobina with inner hub collars + swapped Z,
+    # and a 12 cm coarse PCB with Boolean + WIRE cutter + excluded HIDE collection + Array.
+    reel_sc = bpy.data.scenes.new('SrcBobina')
+    col_up = bpy.data.collections.new('up')
+    col_dn = bpy.data.collections.new('down')
+    reel_sc.collection.children.link(col_up)
+    reel_sc.collection.children.link(col_dn)
+    # Intentionally put UP at -Z and DOWN.001 at +Z with 7mm inner collars like FN04950
+    f_up = make_box('UP', (.22, .22, .002), (0, 0, -.001))
+    c_up = make_box('COLLAR_A', (.05, .05, .007), (0, 0, -.0055))
+    f_dn = make_box('DOWN.001', (.22, .22, .002), (0, 0, .001))
+    c_dn = make_box('COLLAR_B', (.05, .05, .007), (0, 0, .0055))
+    f_up.data.materials.append(mat)
+    f_dn.data.materials.append(mat)
+    col_up.objects.link(f_up)
+    col_up.objects.link(c_up)
+    col_dn.objects.link(f_dn)
+    col_dn.objects.link(c_dn)
+    bobina2_path = os.path.join(temp, 'bobine', 'bobina_col.blend')
+    bpy.data.libraries.write(bobina2_path, {reel_sc, col_up, col_dn, f_up, f_up.data, c_up, c_up.data,
+                                            f_dn, f_dn.data, c_dn, c_dn.data, mat}, fake_user=True)
+
+    pcb_sc = bpy.data.scenes.new('SrcPcb')
+    col_pcb = bpy.data.collections.new('Modello PCB')
+    col_cut = bpy.data.collections.new('Cutters')
+    col_hide = bpy.data.collections.new('HIDE')
+    pcb_sc.collection.children.link(col_pcb)
+    pcb_sc.collection.children.link(col_cut)
+    pcb_sc.collection.children.link(col_hide)
+    prev_sc = bpy.context.window.scene
+    bpy.context.window.scene = pcb_sc
+    for ch_lc in pcb_sc.view_layers[0].layer_collection.children:
+        if ch_lc.name == 'HIDE':
+            ch_lc.exclude = True
+    bpy.context.window.scene = prev_sc
+    long_base = make_box('Base Lunga', (.12, .001, .010), (0, 0, 0))
+    long_base.data.materials.append(pcb_mat)
+    cutter = make_box('Foro Cutter', (.01, .02, .004), (0, 0, 0))
+    cutter.display_type = 'WIRE'
+    cutter.hide_render = True
+    bmod = long_base.modifiers.new('Boolean', 'BOOLEAN')
+    bmod.operation = 'DIFFERENCE'
+    bmod.object = cutter
+    chip = make_box('Chip LED', (.002, .001, .002), (-.04, -.001, 0))
+    chip.data.materials.append(pcb_mat)
+    amod = chip.modifiers.new('Array', 'ARRAY')
+    amod.count = 4
+    amod.relative_offset_displace = (8.0, 0.0, 0.0)
+    ghost = make_box('Fantasma HIDE', (.12, .05, .05), (0, -.04, 0))
+    col_pcb.objects.link(long_base)
+    col_pcb.objects.link(chip)
+    col_cut.objects.link(cutter)
+    col_hide.objects.link(ghost)
+    pcb2_path = os.path.join(temp, 'pcb', 'FN_MODS.blend')
+    bpy.data.libraries.write(pcb2_path, {pcb_sc, col_pcb, col_cut, col_hide, long_base, long_base.data,
+                                         cutter, cutter.data, chip, chip.data, ghost, ghost.data, pcb_mat},
+                             fake_user=True)
+
+    for tmp_obj in (f_up, c_up, f_dn, c_dn, long_base, cutter, chip, ghost):
+        d = tmp_obj.data
+        bpy.data.objects.remove(tmp_obj, do_unlink=True)
+        if d.users == 0:
+            bpy.data.meshes.remove(d)
+    for tmp_col in (col_up, col_dn, col_pcb, col_cut, col_hide):
+        bpy.data.collections.remove(tmp_col)
+    bpy.data.scenes.remove(reel_sc)
+    bpy.data.scenes.remove(pcb_sc)
     try:
         bpy.context.window.scene = scene
         if 'bobina bianca.blend' not in [item[0] for item in panel['bobina_items'](None, None)]:
@@ -1800,6 +2178,38 @@ def exercise_library(scene, obj, values):
         if strip_left:
             raise RuntimeError('La striscia resta in scena senza PCB: %d' % strip_left)
         print('LED_CHECK senza pcb')
+
+        # Exercise collection-based bobina (with collars + swapped Z) and modifier/cutter PCB
+        set_input(mod, 'Altezza bobina', .016)
+        set_input(mod, 'Raggio mozzo', .028)
+        set_input(mod, 'Raggio avvolgimento', .082)
+        set_input(mod, 'Passo radiale', .003)
+        obj.led_studio.bobina = 'bobina_col.blend'
+        obj.led_studio.pcb = 'FN_MODS.blend'
+        if obj.led_studio.status:
+            raise RuntimeError('Errore su bobina_col / FN_MODS: ' + obj.led_studio.status)
+        bpy.context.view_layer.update()
+        ev = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        m_mod = ev.to_mesh()
+        disk_zs = [v.co.z for v in m_mod.vertices if math.hypot(v.co.x, v.co.y) > .09]
+        if not disk_zs or abs(min(disk_zs) - (-.010)) > .0005 or abs(max(disk_zs) - .010) > .0005:
+            ev.to_mesh_clear()
+            raise RuntimeError('Le flange con colletto non hanno rispettato Altezza bobina: %s' %
+                               ((min(disk_zs), max(disk_zs)) if disk_zs else None))
+        strip_ids = {i for i, v in enumerate(m_mod.vertices) if m_mod.attributes['nastro'].data[i].value > .5}
+        strip_rs = [math.hypot(m_mod.vertices[i].co.x, m_mod.vertices[i].co.y) for i in strip_ids]
+        max_s_edge = max((m_mod.vertices[e.vertices[1]].co - m_mod.vertices[e.vertices[0]].co).length
+                         for e in m_mod.edges if e.vertices[0] in strip_ids and e.vertices[1] in strip_ids)
+        strip_zs = (min(m_mod.vertices[i].co.z for i in strip_ids), max(m_mod.vertices[i].co.z for i in strip_ids))
+        ev.to_mesh_clear()
+        if min(strip_rs) < .026:
+            raise RuntimeError('Corde nel foro del mozzo: min_r %.4f m' % min(strip_rs))
+        if max_s_edge > .012:
+            raise RuntimeError('Modulo lungo non suddiviso lungo X: max_edge %.4f m' % max_s_edge)
+        if strip_zs[0] < -.008 or strip_zs[1] > .008:
+            raise RuntimeError('Oggetti HIDE o Cutter entrati nella striscia: Z=%s' % (strip_zs,))
+        print('LED_CHECK bobina_col + FN_MODS ok | min_r %.4f m | max_edge %.4f m | disk_z (%.4f, %.4f)' % (
+            min(strip_rs), max_s_edge, min(disk_zs), max(disk_zs)))
     finally:
         if obj.led_studio.bobina != 'NONE':
             obj.led_studio.bobina = 'NONE'
@@ -1808,42 +2218,57 @@ def exercise_library(scene, obj, values):
         if obj.led_studio.cavo != 'NONE':
             obj.led_studio.cavo = 'NONE'
         for piece in list(bpy.data.objects):
-            if piece.library:
+            if piece.name.startswith('LED Studio | Consolidato '):
+                d = piece.data
+                bpy.data.objects.remove(piece, do_unlink=True)
+                if d is not None and d.users == 0:
+                    bpy.data.meshes.remove(d)
+        for bucket_name in ('LED Studio | Flangia up', 'LED Studio | Flangia down',
+                            'LED Studio | Modulo PCB', 'LED Studio | Cavo flessibile',
+                            'LED Studio | Cavo rigido'):
+            bucket = bpy.data.collections.get(bucket_name)
+            if bucket:
+                for piece in list(bucket.objects):
+                    bucket.objects.unlink(piece)
+                for parent in bpy.data.collections:
+                    if parent.library is None and bucket.name in parent.children:
+                        parent.children.unlink(bucket)
+                bpy.data.collections.remove(bucket)
+        col = bpy.data.collections.get('LED Studio | Libreria')
+        if col:
+            for piece in list(col.objects):
+                col.objects.unlink(piece)
+            for child in list(col.children):
+                col.children.unlink(child)
+            for scene_ in bpy.data.scenes:
+                if scene_.library is None and col.name in scene_.collection.children:
+                    scene_.collection.children.unlink(col)
+            bpy.data.collections.remove(col)
+        for sc_linked in list(bpy.data.scenes):
+            if sc_linked.library is not None:
+                bpy.data.scenes.remove(sc_linked)
+        for col_linked in list(bpy.data.collections):
+            if col_linked.library is not None:
+                for parent in bpy.data.collections:
+                    if parent.library is None and col_linked.name in parent.children:
+                        parent.children.unlink(col_linked)
+                bpy.data.collections.remove(col_linked)
+        for piece in list(bpy.data.objects):
+            if piece.library is not None:
                 bpy.data.objects.remove(piece, do_unlink=True)
         for collection in (bpy.data.meshes, bpy.data.materials):
             for block in list(collection):
-                if block.library and block.users == 0:
+                if block.library is not None and block.users == 0:
                     collection.remove(block)
-        for col in list(bpy.data.collections):
-            if not col.library:
-                continue
-            for parent in bpy.data.collections:
-                if col.name in parent.children:
-                    parent.children.unlink(col)
-            bpy.data.collections.remove(col)
         for lib in list(bpy.data.libraries):
             bpy.data.libraries.remove(lib)
         for name in ('test mozzo', 'test base pcb', 'test cavo', 'test cavo connettore'):
             local = bpy.data.materials.get(PREFIX + ' | ' + name)
             if local and local.users == 0:
                 bpy.data.materials.remove(local)
-        for bucket_name in ('LED Studio | Flangia up', 'LED Studio | Flangia down',
-                            'LED Studio | Modulo PCB', 'LED Studio | Cavo flessibile',
-                            'LED Studio | Cavo rigido'):
-            bucket = bpy.data.collections.get(bucket_name)
-            if bucket and not bucket.objects:
-                for parent in bpy.data.collections:
-                    if bucket.name in parent.children:
-                        parent.children.unlink(bucket)
-                bpy.data.collections.remove(bucket)
-        col = bpy.data.collections.get('LED Studio | Libreria')
-        if col and not col.objects and not col.children:
-            for scene_ in bpy.data.scenes:
-                if col.name in scene_.collection.children:
-                    scene_.collection.children.unlink(col)
-            bpy.data.collections.remove(col)
-        for reset_name, reset_val in (('Altezza bobina', .014), ('Giri uscita', .83),
-                                      ('Apertura uscita', .035), ('Raggio avvolgimento', .078)):
+        for reset_name, reset_val in (('Altezza bobina', .014), ('Raggio mozzo', .026),
+                                      ('Giri uscita', .83), ('Apertura uscita', .035),
+                                      ('Raggio avvolgimento', .078), ('Passo radiale', .002)):
             set_input(obj.modifiers['Configurazione prodotto'], reset_name, reset_val)
         for name, value in values.items():
             set_input(obj.modifiers['Configurazione prodotto'], name, value)
