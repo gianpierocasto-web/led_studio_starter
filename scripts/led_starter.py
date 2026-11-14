@@ -629,11 +629,10 @@ def build_cable():
 
 
 def build_reel():
-    """Move up and down apart. A cylinder fills the opening with up's first material."""
+    """Move up and down apart to match Altezza bobina."""
     q = Graph('LED | 03 Bobina parametrica')
     q.sock('Flangia up', 'NodeSocketCollection')
     q.sock('Flangia down', 'NodeSocketCollection')
-    q.sock('Raggio mozzo', default=.026, lo=.012, hi=.08)
     q.sock('Altezza bobina', default=.014, lo=.002, hi=.2,
            description='Luce interna fra le flange, in metri.')
     p = q.i.outputs
@@ -674,26 +673,11 @@ def build_reel():
         q.link(z_stat.outputs['Min'] if sign > 0 else z_stat.outputs['Max'], z_ref.inputs['True'])
         half = q.math('MULTIPLY', p['Altezza bobina'], .5 * sign)
         moved = q.transform(flange_geo, q.vec(0, 0, q.math('SUBTRACT', half, z_ref.outputs['Output'])))
-        return moved, flange_geo
+        return moved
 
-    up, up_geo = flange('Flangia up', 1)
-    down, _down_geo = flange('Flangia down', -1)
-    cyl = q.node('GeometryNodeMeshCylinder', 'Mozzo')
-    cyl.inputs['Vertices'].default_value = 64
-    cyl.inputs['Side Segments'].default_value = 1
-    cyl.inputs['Fill Segments'].default_value = 1
-    cyl.fill_type = 'NONE'
-    q.link(p['Raggio mozzo'], cyl.inputs['Radius'])
-    q.link(p['Altezza bobina'], cyl.inputs['Depth'])
-    mats = q.node('GeometryNodeGeometryMaterials')
-    mats.inputs['Component Type'].default_value = 'Mesh'
-    q.link(up_geo, mats.inputs['Geometry'])
-    item = q.node('GeometryNodeListGetItem')
-    item.socket_type = 'MATERIAL'
-    q.link(mats.outputs['Materials'], item.inputs['List'])
-    item.inputs['Index'].default_value = 0
-    hub = q.material(cyl.outputs['Mesh'], item.outputs['Value'])
-    return q.finish(q.join(up, down, hub))
+    up = flange('Flangia up', 1)
+    down = flange('Flangia down', -1)
+    return q.finish(q.join(up, down))
 
 
 def build_master(path, strip, reel, cable):
@@ -982,7 +966,7 @@ def build_master(path, strip, reel, cable):
     q.link(p['Connettore'], cable_node.inputs['Connettore'])
     q.link(p['Passo deformazione cavo'], cable_node.inputs['Passo deformazione cavo'])
     reel_node = q.call(reel, '03 Bobina')
-    for name in ('Flangia up', 'Flangia down', 'Raggio mozzo', 'Altezza bobina'):
+    for name in ('Flangia up', 'Flangia down', 'Altezza bobina'):
         q.link(p[name], reel_node.inputs[name])
     return q.finish(q.join(strip_node.outputs[0], reel_node.outputs[0], cable_node.outputs[0]))
 
@@ -1636,7 +1620,6 @@ Sono preset di inquadratura e di quote della spirale, non prodotti certificati.
 7. F12 per il render; tastierino 0 per la camera.
 
 Le flange non si scalano: si allontanano fino alla luce richiesta.
-Il cilindro fra le due prende il primo materiale di up.
 La larghezza della striscia è la misura Z del pezzo PCB, non uno slider.
 I livelli sono la parte intera di altezza / larghezza, minimo uno. Il resto
 resta come margine, centrato fra le flange.
@@ -2346,9 +2329,9 @@ def main():
     for scene, obj in built:
         window.scene = scene
         zs, _mats, _islands, _strip_z = mesh_report(obj)
-        if not zs:
-            raise RuntimeError('Geometria vuota: ' + scene.name)
-        print('LED_CHECK', scene.name, 'vertices', len(zs), 'z', (min(zs), max(zs)))
+        if zs:
+            raise RuntimeError('Geometria non vuota senza asset scelti: ' + scene.name)
+        print('LED_CHECK', scene.name, 'vertices', len(zs))
     window.scene = built[0][0]
     exercise_library(built[0][0], built[0][1], PRESETS[0][1])
     window.scene = built[1][0]
