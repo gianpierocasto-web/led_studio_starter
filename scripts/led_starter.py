@@ -531,6 +531,10 @@ def build_cable():
     flex = densify_tubes(q, realize_collection(q, p['Cavo flessibile'], 'Cavo flessibile'),
                          p['Passo deformazione cavo'])
     rigid = realize_collection(q, p['Connettore'], 'Connettore', with_piece_id=True)
+    rigid_cnt = q.node('GeometryNodeAttributeDomainSize', 'Vertici connettore')
+    rigid_cnt.component = 'MESH'
+    q.link(rigid, rigid_cnt.inputs['Geometry'])
+    has_rigid = q.math('GREATER_THAN', rigid_cnt.outputs['Point Count'], 0)
     both = q.join(flex, rigid)
     pos = q.node('GeometryNodeInputPosition')
     box = q.node('GeometryNodeBoundBox', 'Ingombro cavo')
@@ -633,13 +637,17 @@ def build_cable():
     rigid_geo = q.node('GeometryNodeRemoveAttribute', 'Pulisci pezzo')
     rigid_geo.inputs['Name'].default_value = 'pezzo'
     q.link(rigid_placed, rigid_geo.inputs['Geometry'])
+    rigid_sw = q.node('GeometryNodeSwitch', 'Solo se c\'è un connettore rigido')
+    rigid_sw.input_type = 'GEOMETRY'
+    q.link(has_rigid, rigid_sw.inputs['Switch'])
+    q.link(rigid_geo.outputs['Geometry'], rigid_sw.inputs['True'])
     domain = q.node('GeometryNodeAttributeDomainSize', 'Vertici cavo')
     domain.component = 'MESH'
     q.link(both, domain.inputs['Geometry'])
     out = q.node('GeometryNodeSwitch', 'Solo con un cavo scelto')
     out.input_type = 'GEOMETRY'
     q.link(q.math('GREATER_THAN', domain.outputs['Point Count'], 0), out.inputs['Switch'])
-    q.link(q.join(flex_geo, rigid_geo.outputs['Geometry']), out.inputs['True'])
+    q.link(q.join(flex_geo, rigid_sw.outputs['Output']), out.inputs['True'])
     return q.finish(out.outputs['Output'])
 
 
@@ -705,6 +713,8 @@ def build_master(path, strip, reel, cable):
     q.sock('Connettore', 'NodeSocketCollection')
     q.sock('Passo deformazione cavo', default=.001, lo=.0002, hi=.01,
            description='Distanza fra gli anelli inseriti nella guaina, in metri.')
+    q.sock('Innesto cavo', default=0.0, lo=0.0, hi=.05,
+           description='Quanto il cappuccio iniziale del cavo scorre sopra la fine del PCB (metri).')
     for name, value, lo, hi in [('Raggio mozzo', .026, .012, .08), ('Raggio avvolgimento', .078, .025, .18),
                                 ('Passo radiale', .002, .0012, .008), ('Giri uscita', .83, .25, 1.5),
                                 ('Apertura uscita', .035, .005, .08)]:
@@ -860,17 +870,19 @@ def build_master(path, strip, reel, cable):
     modules.rounding_mode = 'FLOOR'
     q.link(q.math('DIVIDE', span.outputs['Length'], safe_pitch), modules.inputs['Float'])
     has_pitch = q.math('GREATER_THAN', passo, .00001)
-    attach = q.node('GeometryNodeSwitch', 'Arco di attacco')
-    attach.input_type = 'FLOAT'
-    q.link(has_pitch, attach.inputs['Switch'])
-    q.link(q.math('MULTIPLY', modules.outputs['Integer'], passo), attach.inputs['True'])
-    attach.inputs['False'].default_value = 0.0
-    # The cable curve starts at the attachment and runs along the same spiral.
+    attach_raw = q.node('GeometryNodeSwitch', 'Arco fine PCB')
+    attach_raw.input_type = 'FLOAT'
+    q.link(has_pitch, attach_raw.inputs['Switch'])
+    q.link(q.math('MULTIPLY', modules.outputs['Integer'], passo), attach_raw.inputs['True'])
+    attach_raw.inputs['False'].default_value = 0.0
+    cable_start = q.math('MAXIMUM', q.math('SUBTRACT', attach_raw.outputs['Output'], p['Innesto cavo']), 0.0,
+                         'Inizio cavo con innesto')
+    # The cable curve starts at cable_start and runs along the same spiral.
     on_curve = q.node('GeometryNodeTrimCurve', 'Dal PCB lungo la spirale')
     on_curve.mode = 'LENGTH'
     q.link(single_curve, on_curve.inputs['Curve'])
-    q.link(attach.outputs['Output'], on_curve.inputs['Start_001'])
-    q.link(q.math('MINIMUM', q.math('ADD', attach.outputs['Output'], cable_len), span.outputs['Length']),
+    q.link(cable_start, on_curve.inputs['Start_001'])
+    q.link(q.math('MINIMUM', q.math('ADD', cable_start, cable_len), span.outputs['Length']),
            on_curve.inputs['End_001'])
     covered = q.node('GeometryNodeCurveLength', 'Tratto già sulla spirale')
     q.link(on_curve.outputs['Curve'], covered.inputs['Curve'])
@@ -886,8 +898,8 @@ def build_master(path, strip, reel, cable):
                     q.math('ADD', q.math('MULTIPLY', larghezza, .5),
                            q.math('MULTIPLY', q.math('SUBTRACT', livelli, 1), larghezza)),
                     'Quota ultimo livello')
-    along = q.math('DIVIDE', q.node('GeometryNodeInputIndex').outputs['Index'], 3071)
-    delta_t = q.math('MULTIPLY', along, 3)
+    along = q.math('DIVIDE', q.node('GeometryNodeInputIndex').outputs['Index'], 4095)
+    delta_t = q.math('MULTIPLY', along, 6)
     outward_t = q.math('ADD', t_end.outputs['Output'], delta_t)
     inward_t = q.math('MULTIPLY', delta_t, -1)
     t_tail = q.node('GeometryNodeSwitch', 'Verso radiale di uscita')
@@ -901,8 +913,15 @@ def build_master(path, strip, reel, cable):
     q.link(outward_t, ang_param.inputs['True'])
     q.link(delta_t, ang_param.inputs['False'])
     past = q.math('MAXIMUM', q.math('SUBTRACT', t_tail.outputs['Output'], turns), 0)
-    expansion = q.math('MULTIPLY', p['Apertura uscita'],
-                       q.math('POWER', q.math('DIVIDE', past, q.math('MAXIMUM', giri, .001)), 2))
+    giri_safe = q.math('MAXIMUM', giri, .001)
+    past_exit = q.math('MINIMUM', past, giri_safe)
+    after_exit = q.math('MAXIMUM', q.math('SUBTRACT', past, giri_safe), 0)
+    # Quadratic flare inside the exit turn, then constant C1 radial slope outside so long cables never explode
+    expansion = q.math('ADD',
+                       q.math('MULTIPLY', p['Apertura uscita'],
+                              q.math('POWER', q.math('DIVIDE', past_exit, giri_safe), 2)),
+                       q.math('MULTIPLY', q.math('DIVIDE', q.math('MULTIPLY', p['Apertura uscita'], 2.0), giri_safe),
+                              after_exit))
     radius = q.math('MAXIMUM',
                     q.math('ADD', q.math('ADD', p['Raggio mozzo'],
                                          q.math('MULTIPLY', t_tail.outputs['Output'], passo_rad)),
@@ -911,7 +930,7 @@ def build_master(path, strip, reel, cable):
     angle = q.math('ADD', leave.outputs['Angolo'], q.math('MULTIPLY', ang_param.outputs['Output'], 2 * math.pi))
     tail = q.node('GeometryNodeMeshLine', 'Prolungamento della spirale')
     tail.mode = 'OFFSET'
-    tail.inputs['Count'].default_value = 3072
+    tail.inputs['Count'].default_value = 4096
     tail_pos = q.node('GeometryNodeSetPosition', 'Stessa spirale')
     q.link(tail.outputs['Mesh'], tail_pos.inputs['Geometry'])
     q.link(q.vec(q.math('MULTIPLY', radius, q.math('COSINE', angle)),
@@ -987,7 +1006,7 @@ def build_master(path, strip, reel, cable):
     join_pt.mode = 'LENGTH'
     join_pt.use_all_curves = True
     q.link(single_curve, join_pt.inputs['Curves'])
-    q.link(attach.outputs['Output'], join_pt.inputs['Length'])
+    q.link(cable_start, join_pt.inputs['Length'])
     raw_head = q.node('GeometryNodeSampleCurve', 'Inizio cavo')
     raw_foot = q.node('GeometryNodeSampleCurve', 'Fine cavo')
     for sample, factor in ((raw_head, 0.0), (raw_foot, 1.0)):
@@ -1232,7 +1251,39 @@ def is_renderable_mesh(obj, pre_hidden=None):
             and obj.display_type not in ('WIRE', 'BOUNDS'))
 
 
+def purge_broken_libraries():
+    broken_libs = []
+    for lib in list(bpy.data.libraries):
+        try:
+            fp = bpy.path.abspath(lib.filepath)
+        except ReferenceError:
+            continue
+        if not os.path.isfile(fp):
+            broken_libs.append(lib)
+    if not broken_libs:
+        return
+    broken_set = set(broken_libs)
+    parent = bpy.data.collections.get(LIBRARY)
+    for o in list(bpy.data.objects):
+        if o.library in broken_set and parent and o in set(parent.objects):
+            parent.objects.unlink(o)
+    for pcol in list(bpy.data.collections):
+        if pcol.library is None:
+            for ch in list(pcol.children):
+                if ch.library in broken_set:
+                    pcol.children.unlink(ch)
+    to_remove = []
+    for storage in (bpy.data.scenes, bpy.data.collections, bpy.data.objects,
+                    bpy.data.meshes, bpy.data.materials, bpy.data.images, bpy.data.node_groups):
+        for blk in list(storage):
+            if blk.library in broken_set:
+                to_remove.append(blk)
+    to_remove.extend(broken_libs)
+    bpy.data.batch_remove(to_remove)
+
+
 def link_blend_assets(rel_path, reload_lib=False):
+    purge_broken_libraries()
     target = norm(rel_path)
     if reload_lib:
         for lib in list(bpy.data.libraries):
@@ -1258,24 +1309,36 @@ def link_blend_assets(rel_path, reload_lib=False):
 
     visible = set()
     if loaded_scenes:
-        for sc in loaded_scenes:
-            if not sc.view_layers:
-                continue
-            root_lc = sc.view_layers[0].layer_collection
-            if root_lc is None:
-                continue
-            def walk(lc):
-                if lc.exclude or lc.hide_viewport or lc.collection.hide_viewport or lc.collection.hide_render:
-                    return
-                for o in lc.collection.objects:
-                    if is_renderable_mesh(o, pre_hidden):
-                        visible.add(o)
-                for ch in lc.children:
-                    walk(ch)
-            walk(root_lc)
+        # Prefer the main scene (Scene, or the scene with named asset collections) over auxiliary studio/backdrop scenes
+        def scene_score(sc):
+            has_named_col = 1 if sc.collection.children else 0
+            is_main = 1 if sc.name == 'Scene' else 0
+            return (has_named_col, is_main, -len(sc.name))
+        chosen_sc = sorted(loaded_scenes, key=scene_score, reverse=True)[0]
+        if chosen_sc.view_layers:
+            root_lc = chosen_sc.view_layers[0].layer_collection
+            if root_lc is not None:
+                has_child_meshes = any(
+                    not ch.exclude and not ch.hide_viewport
+                    and not ch.collection.hide_viewport and not ch.collection.hide_render
+                    and any(is_renderable_mesh(o, pre_hidden) for o in ch.collection.all_objects)
+                    for ch in root_lc.children
+                )
+                def walk(lc, is_root=False):
+                    if lc.exclude or lc.hide_viewport or lc.collection.hide_viewport or lc.collection.hide_render:
+                        return
+                    if not (is_root and has_child_meshes):
+                        for o in lc.collection.objects:
+                            if is_renderable_mesh(o, pre_hidden):
+                                if o.name.lower().startswith(('plane', 'floor', 'fondo', 'backdrop', 'reference')):
+                                    continue
+                                visible.add(o)
+                    for ch in lc.children:
+                        walk(ch, False)
+                walk(root_lc, True)
     if not visible:
         for o in loaded_objs:
-            if is_renderable_mesh(o, pre_hidden):
+            if is_renderable_mesh(o, pre_hidden) and not o.name.lower().startswith(('plane', 'floor', 'fondo', 'backdrop', 'reference')):
                 visible.add(o)
 
     parent = ensure_collection()
@@ -1297,7 +1360,7 @@ def hide_library_in_viewport():
         col.hide_viewport = True
 
 
-def bake_finished_mesh(objs, bucket, label, slice_step=None, align_ends=False):
+def bake_finished_mesh(objs, bucket, label, slice_step=None, align_ends=False, flip_x=False):
     if not objs:
         return None
     lib_col = ensure_collection()
@@ -1354,6 +1417,12 @@ def bake_finished_mesh(objs, bucket, label, slice_step=None, align_ends=False):
     if not len(bm.verts):
         bm.free()
         return None
+
+    if flip_x:
+        # Rotate 180 degrees around Y so X -> -X, Z -> -Z, Y unchanged (preserves outward -Y side and face winding!)
+        for v in bm.verts:
+            v.co.x = -v.co.x
+            v.co.z = -v.co.z
 
     if align_ends and len(bm.verts):
         # Snap open profile loops at the two ends of each spanning island to one clean X plane
@@ -1573,15 +1642,58 @@ def update_cavo(self, context):
         settings.status = 'Nessuna mesh visibile nel file: ' + self.cavo
         return
     step = float(get_socket(obj, 'Passo deformazione cavo', .001) or .001)
+    # Auto-detect whether the cable was modeled along -X (connector/boot near X=0, wire tail towards -X)
+    deps = bpy.context.evaluated_depsgraph_get()
+    part_spans = []
+    for p in vis_meshes:
+        ev = p.evaluated_get(deps)
+        me = ev.to_mesh()
+        if len(me.vertices):
+            mw = p.matrix_world if any(abs(p.matrix_world[r][c] - (1.0 if r == c else 0.0)) > 1e-6 for r in range(4) for c in range(4)) else p.matrix_basis
+            pts = [mw @ v.co for v in me.vertices]
+            xs = [pt.x for pt in pts]
+            zs = [pt.z for pt in pts]
+            part_spans.append((min(xs), max(xs), max(zs) - min(zs)))
+        ev.to_mesh_clear()
+    flip_cavo = False
+    if part_spans:
+        total_min_x = min(s[0] for s in part_spans)
+        total_max_x = max(s[1] for s in part_spans)
+        if abs(total_min_x) > abs(total_max_x) * 2.5 and total_max_x <= .02:
+            flip_cavo = True
+        else:
+            at_lo_z = max((s[2] for s in part_spans if s[0] <= total_min_x + .015), default=0.0)
+            at_hi_z = max((s[2] for s in part_spans if s[1] >= total_max_x - .015), default=0.0)
+            if at_hi_z > at_lo_z * 1.8 and total_min_x < -.05:
+                flip_cavo = True
+    # Auto-detect connector sleeve socket depth (e.g. hollow boot + internal connector starting behind the mouth)
+    sleeve_overlap = 0.0
+    if len(part_spans) >= 2:
+        mouth_x = total_min_x if not flip_cavo else -total_max_x
+        norm_spans = sorted([
+            ((-mx, -mn, dz) if flip_cavo else (mn, mx, dz))
+            for mn, mx, dz in part_spans
+        ], key=lambda item: item[0])
+        outer_boot = [item for item in norm_spans if abs(item[0] - mouth_x) < .001]
+        if outer_boot:
+            boot_dz = max(item[2] for item in outer_boot)
+            inner_pins = [item for item in norm_spans
+                          if mouth_x + .004 <= item[0] <= mouth_x + .035 and item[2] < boot_dz * .98]
+            if inner_pins:
+                sleeve_overlap = min(item[0] - mouth_x for item in inner_pins)
     flex_objs = [p for p in vis_meshes if p.get('led_role') != 'connector']
     rigid_objs = [p for p in vis_meshes if p.get('led_role') == 'connector']
     if flex_objs:
-        bake_finished_mesh(flex_objs, flex, 'Cavo flessibile', slice_step=max(step, .0004))
+        bake_finished_mesh(flex_objs, flex, 'Cavo flessibile', slice_step=max(step, .0004), flip_x=flip_cavo)
     for idx, r_obj in enumerate(rigid_objs):
-        bake_finished_mesh([r_obj], rigid, 'Connettore %d' % idx, slice_step=None)
+        bake_finished_mesh([r_obj], rigid, 'Connettore %d' % idx, slice_step=None, flip_x=flip_cavo)
     hide_library_in_viewport()
     set_socket(obj, 'Cavo flessibile', flex)
     set_socket(obj, 'Connettore', rigid)
+    try:
+        set_socket(obj, 'Innesto cavo', float(sleeve_overlap))
+    except KeyError:
+        pass
     settings.status = ''
 
 
@@ -1596,6 +1708,7 @@ class LED_OT_reload_assets(bpy.types.Operator):
         return obj is not None and modifier_of(obj) is not None
 
     def execute(self, context):
+        purge_broken_libraries()
         obj = context.object
         st = obj.led_studio
         for folder, fname in (('bobine', st.bobina), ('pcb', st.pcb), ('cavi', st.cavo)):
@@ -1655,6 +1768,7 @@ def register():
         bpy.utils.register_class(LED_PT_library)
     if not hasattr(bpy.types.Object, 'led_studio'):
         bpy.types.Object.led_studio = bpy.props.PointerProperty(type=LEDStudioSettings)
+    purge_broken_libraries()
 
 
 def unregister():
@@ -2174,6 +2288,32 @@ def exercise_library(scene, obj, values):
         bpy.data.collections.remove(tmp_col)
     bpy.data.scenes.remove(reel_sc)
     bpy.data.scenes.remove(pcb_sc)
+
+    # Third synthetic library: -X cable with hollow boot socket + second Scene.001 containing a 2m Plane
+    cav_sc_main = bpy.data.scenes.new('Scene')
+    cav_sc_extra = bpy.data.scenes.new('Scene.001')
+    col_cavo = bpy.data.collections.new('CAVO')
+    cav_sc_main.collection.children.link(col_cavo)
+    boot_neg = make_box('Cappuccio', (.08, .008, .016), (-.04, 0, 0))
+    pins_neg = make_box('PinInterni', (.02, .004, .012), (-.03, 0, 0))
+    wire_neg = make_box('GuainaLunga', (.40, .003, .007), (-.26, 0, 0))
+    for w_obj in (boot_neg, pins_neg, wire_neg):
+        w_obj.data.materials.append(cable_mat)
+        col_cavo.objects.link(w_obj)
+    bg_plane = make_box('Plane', (2.0, 2.0, .01), (0, 0, 0))
+    cav_sc_extra.collection.objects.link(bg_plane)
+    cavo2_path = os.path.join(temp, 'cavi', 'cavo_neg_x.blend')
+    bpy.data.libraries.write(cavo2_path, {cav_sc_main, cav_sc_extra, col_cavo, boot_neg, boot_neg.data,
+                                          pins_neg, pins_neg.data, wire_neg, wire_neg.data,
+                                          bg_plane, bg_plane.data, cable_mat}, fake_user=True)
+    for tmp_obj in (boot_neg, pins_neg, wire_neg, bg_plane):
+        d = tmp_obj.data
+        bpy.data.objects.remove(tmp_obj, do_unlink=True)
+        if d.users == 0:
+            bpy.data.meshes.remove(d)
+    bpy.data.collections.remove(col_cavo)
+    bpy.data.scenes.remove(cav_sc_main)
+    bpy.data.scenes.remove(cav_sc_extra)
     try:
         bpy.context.window.scene = scene
         if 'bobina bianca.blend' not in [item[0] for item in panel['bobina_items'](None, None)]:
@@ -2278,6 +2418,32 @@ def exercise_library(scene, obj, values):
             raise RuntimeError('Oggetti HIDE o Cutter entrati nella striscia: Z=%s' % (strip_zs,))
         print('LED_CHECK bobina_col + FN_MODS ok | min_r %.4f m | max_edge %.4f m | disk_z (%.4f, %.4f)' % (
             min(strip_rs), max_s_edge, min(disk_zs), max(disk_zs)))
+
+        # Verify -X cable + Scene.001 Plane filtering + automatic sleeve overlap
+        obj.led_studio.cavo = 'cavo_neg_x.blend'
+        if obj.led_studio.status:
+            raise RuntimeError('Errore su cavo_neg_x: ' + obj.led_studio.status)
+        bpy.context.view_layer.update()
+        ev = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        m_neg = ev.to_mesh()
+        xs_neg = [v.co.x for v in m_neg.vertices]
+        ys_neg = [v.co.y for v in m_neg.vertices]
+        cab_origs = [m_neg.attributes['origine'].data[i].vector.x
+                     for i, _ in enumerate(m_neg.vertices) if m_neg.attributes['cavo'].data[i].value > .5]
+        ev.to_mesh_clear()
+        if max(xs_neg) - min(xs_neg) > .9 or max(ys_neg) - min(ys_neg) > .9:
+            raise RuntimeError('Plane di sfondo entrato nel cavo: bbox X=%s Y=%s' % (
+                (min(xs_neg), max(xs_neg)), (min(ys_neg), max(ys_neg))))
+        if not cab_origs or max(cab_origs) - min(cab_origs) < .40:
+            raise RuntimeError('Lunghezza cavo_neg_x errata: %s' % ((min(cab_origs), max(cab_origs)) if cab_origs else None))
+        innesto = 0.0
+        for item in mod.node_group.interface.items_tree:
+            if item.item_type == 'SOCKET' and item.in_out == 'INPUT' and item.name == 'Innesto cavo':
+                innesto = mod.properties.inputs[item.identifier].get('value', 0.0)
+        if abs(innesto - .02) > .002:
+            raise RuntimeError('Innesto cavo automatico errato: %.4f' % innesto)
+        print('LED_CHECK cavo_neg_x + Plane filtrato ok | len %.3f m | innesto %.4f m' % (
+            max(cab_origs) - min(cab_origs), innesto))
     finally:
         if obj.led_studio.bobina != 'NONE':
             obj.led_studio.bobina = 'NONE'
@@ -2380,7 +2546,8 @@ def upgrade_inplace():
                 pass
     replace_text('LEGGIMI - LED Studio', README)
     replace_text('LED Studio Libreria', PANEL_SOURCE, module=True)
-    load_panel()
+    panel = load_panel()
+    panel['purge_broken_libraries']()
     prev_scene = bpy.context.window.scene if bpy.context.window else None
     for obj, _mod, _numeric in saved:
         if bpy.context.window:
@@ -2389,12 +2556,13 @@ def upgrade_inplace():
                     bpy.context.window.scene = sc
                     break
         if hasattr(obj, 'led_studio'):
-            if obj.led_studio.bobina != 'NONE':
-                obj.led_studio.bobina = obj.led_studio.bobina
-            if obj.led_studio.pcb != 'NONE':
-                obj.led_studio.pcb = obj.led_studio.pcb
-            if obj.led_studio.cavo != 'NONE':
-                obj.led_studio.cavo = obj.led_studio.cavo
+            for prop_name, folder in (('bobina', 'bobine'), ('pcb', 'pcb'), ('cavo', 'cavi')):
+                val = getattr(obj.led_studio, prop_name)
+                if val != 'NONE':
+                    if os.path.isfile(bpy.path.abspath('//' + folder + '/' + val)):
+                        setattr(obj.led_studio, prop_name, val)
+                    else:
+                        setattr(obj.led_studio, prop_name, 'NONE')
     if bpy.context.window and prev_scene is not None:
         bpy.context.window.scene = prev_scene
     bpy.ops.wm.save_mainfile()
