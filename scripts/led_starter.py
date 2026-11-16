@@ -1125,6 +1125,7 @@ PANEL_SOURCE = r'''import bpy
 import bmesh
 import math
 import os
+from bpy.app.handlers import persistent
 
 LIBRARY = 'LED Studio | Libreria'
 _bobina_items = [('NONE', 'Nessuna', 'Nessun file scelto')]
@@ -1251,6 +1252,40 @@ def is_renderable_mesh(obj, pre_hidden=None):
             and obj.display_type not in ('WIRE', 'BOUNDS'))
 
 
+def relocate_local_libraries():
+    if not bpy.data.filepath:
+        return
+    local_ess = os.path.join(bpy.utils.resource_path('LOCAL'), 'datafiles', 'assets', 'nodes', 'geometry_nodes_essentials.blend')
+    for lib in list(bpy.data.libraries):
+        try:
+            raw_fp = lib.filepath
+            abs_fp = bpy.path.abspath(raw_fp)
+        except ReferenceError:
+            continue
+        fname = os.path.basename(raw_fp.replace('\\', '/'))
+        if fname.lower().startswith('geometry_nodes_essentials.blend'):
+            if not os.path.isfile(abs_fp) and os.path.isfile(local_ess):
+                lib.filepath = local_ess
+                try:
+                    lib.reload()
+                except RuntimeError:
+                    pass
+            continue
+        for folder in ('bobine', 'pcb', 'cavi'):
+            rel_candidate = '//' + folder + '/' + fname
+            abs_candidate = bpy.path.abspath(rel_candidate)
+            if os.path.isfile(abs_candidate):
+                needs_reload = not os.path.isfile(abs_fp) or norm(abs_fp) != norm(abs_candidate)
+                if raw_fp.replace('\\', '/') != rel_candidate:
+                    lib.filepath = rel_candidate
+                if needs_reload:
+                    try:
+                        lib.reload()
+                    except RuntimeError:
+                        pass
+                break
+
+
 def purge_broken_libraries():
     broken_libs = []
     for lib in list(bpy.data.libraries):
@@ -1283,6 +1318,7 @@ def purge_broken_libraries():
 
 
 def link_blend_assets(rel_path, reload_lib=False):
+    relocate_local_libraries()
     purge_broken_libraries()
     target = norm(rel_path)
     if reload_lib:
@@ -1293,13 +1329,20 @@ def link_blend_assets(rel_path, reload_lib=False):
         return [x for x in items if x.library is not None and norm(x.library.filepath) == target]
 
     pre_hidden = {o.name: bool(o.hide_render) for o in from_target(bpy.data.objects)}
-    with bpy.data.libraries.load(rel_path, link=True) as (src, dst):
+    with bpy.data.libraries.load(rel_path, link=True, relative=True) as (src, dst):
         ex_o = set(pre_hidden.keys())
         ex_c = {c.name for c in from_target(bpy.data.collections)}
         ex_s = {s.name for s in from_target(bpy.data.scenes)}
         dst.objects = [n for n in src.objects if n not in ex_o]
         dst.collections = [n for n in src.collections if n not in ex_c]
         dst.scenes = [n for n in src.scenes if n not in ex_s]
+    for lib in list(bpy.data.libraries):
+        try:
+            if norm(lib.filepath) == target and lib.filepath.replace('\\', '/') != rel_path:
+                lib.filepath = rel_path
+        except ReferenceError:
+            pass
+    relocate_local_libraries()
     for o in dst.objects:
         if o is not None:
             pre_hidden[o.name] = bool(o.hide_render)
@@ -1358,6 +1401,27 @@ def hide_library_in_viewport():
     if col is not None:
         col.hide_render = True
         col.hide_viewport = True
+
+
+def missing_textures(objs):
+    missing = []
+    seen = set()
+    for o in objs:
+        if o.type != 'MESH' or o.data is None:
+            continue
+        for mat in o.data.materials:
+            if mat is None or not mat.use_nodes or mat.node_tree is None:
+                continue
+            for node in mat.node_tree.nodes:
+                if node.type == 'TEX_IMAGE' and node.image is not None:
+                    img = node.image
+                    if img.packed_file is not None or img.source != 'FILE' or not img.filepath:
+                        continue
+                    absp = bpy.path.abspath(img.filepath, library=img.library or mat.library)
+                    if not os.path.isfile(absp) and img.name not in seen:
+                        seen.add(img.name)
+                        missing.append(os.path.basename(img.filepath.replace('\\', '/')) or img.name)
+    return missing
 
 
 def bake_finished_mesh(objs, bucket, label, slice_step=None, align_ends=False, flip_x=False):
@@ -1587,7 +1651,8 @@ def update_bobina(self, context):
     hide_library_in_viewport()
     set_socket(obj, 'Flangia up', up_bucket)
     set_socket(obj, 'Flangia down', down_bucket)
-    settings.status = ''
+    miss_tex = missing_textures(found['up'] + found['down'])
+    settings.status = ('Texture non impacchettate: ' + ', '.join(miss_tex[:3])) if miss_tex else ''
 
 
 def update_pcb(self, context):
@@ -1616,7 +1681,8 @@ def update_pcb(self, context):
         settings.status = 'Geometria PCB vuota: ' + self.pcb
         return
     set_socket(obj, 'Modulo PCB', pcb_bucket)
-    settings.status = ''
+    miss_tex = missing_textures(vis_meshes)
+    settings.status = ('Texture non impacchettate: ' + ', '.join(miss_tex[:3])) if miss_tex else ''
 
 
 def update_cavo(self, context):
@@ -1694,7 +1760,8 @@ def update_cavo(self, context):
         set_socket(obj, 'Innesto cavo', float(sleeve_overlap))
     except KeyError:
         pass
-    settings.status = ''
+    miss_tex = missing_textures(vis_meshes)
+    settings.status = ('Texture non impacchettate: ' + ', '.join(miss_tex[:3])) if miss_tex else ''
 
 
 class LED_OT_reload_assets(bpy.types.Operator):
@@ -1759,6 +1826,12 @@ class LED_PT_library(bpy.types.Panel):
             layout.label(text='Crea accanto al file: ' + ', '.join(missing) + '.')
 
 
+@persistent
+def on_load_post(_dummy):
+    relocate_local_libraries()
+    purge_broken_libraries()
+
+
 def register():
     if not hasattr(bpy.types, 'LED_OT_reload_assets'):
         bpy.utils.register_class(LED_OT_reload_assets)
@@ -1768,10 +1841,18 @@ def register():
         bpy.utils.register_class(LED_PT_library)
     if not hasattr(bpy.types.Object, 'led_studio'):
         bpy.types.Object.led_studio = bpy.props.PointerProperty(type=LEDStudioSettings)
+    for fn in list(bpy.app.handlers.load_post):
+        if getattr(fn, '__name__', '') == 'on_load_post':
+            bpy.app.handlers.load_post.remove(fn)
+    bpy.app.handlers.load_post.append(on_load_post)
+    relocate_local_libraries()
     purge_broken_libraries()
 
 
 def unregister():
+    for fn in list(bpy.app.handlers.load_post):
+        if getattr(fn, '__name__', '') == 'on_load_post':
+            bpy.app.handlers.load_post.remove(fn)
     if hasattr(bpy.types.Object, 'led_studio'):
         del bpy.types.Object.led_studio
     if hasattr(bpy.types, 'LED_PT_library'):
@@ -2320,7 +2401,7 @@ def exercise_library(scene, obj, values):
             raise RuntimeError('Il menu Bobina non elenca il file di prova')
         obj.led_studio.bobina = 'bobina bianca.blend'
         obj.led_studio.pcb = 'FN01234.blend'
-        if obj.led_studio.status:
+        if obj.led_studio.status and 'Texture' not in obj.led_studio.status:
             raise RuntimeError(obj.led_studio.status)
         mod = obj.modifiers['Configurazione prodotto']
         set_input(mod, 'Altezza bobina', .020)
@@ -2509,7 +2590,7 @@ def exercise_library(scene, obj, values):
         shutil.rmtree(temp, ignore_errors=True)
 
 
-def upgrade_inplace():
+def upgrade_inplace(clean_assets=False):
     """Rebuild the five Geometry Nodes groups and panel text without touching scenes, lights or cameras."""
     if bpy.app.version < (5, 3, 0):
         raise RuntimeError('LED Studio richiede Blender 5.3 o successivo.')
@@ -2547,6 +2628,7 @@ def upgrade_inplace():
     replace_text('LEGGIMI - LED Studio', README)
     replace_text('LED Studio Libreria', PANEL_SOURCE, module=True)
     panel = load_panel()
+    panel['relocate_local_libraries']()
     panel['purge_broken_libraries']()
     prev_scene = bpy.context.window.scene if bpy.context.window else None
     for obj, _mod, _numeric in saved:
@@ -2558,11 +2640,50 @@ def upgrade_inplace():
         if hasattr(obj, 'led_studio'):
             for prop_name, folder in (('bobina', 'bobine'), ('pcb', 'pcb'), ('cavo', 'cavi')):
                 val = getattr(obj.led_studio, prop_name)
-                if val != 'NONE':
+                if clean_assets:
+                    if val != 'NONE':
+                        setattr(obj.led_studio, prop_name, 'NONE')
+                elif val != 'NONE':
                     if os.path.isfile(bpy.path.abspath('//' + folder + '/' + val)):
                         setattr(obj.led_studio, prop_name, val)
                     else:
                         setattr(obj.led_studio, prop_name, 'NONE')
+    if clean_assets:
+        for piece in list(bpy.data.objects):
+            if piece.name.startswith('LED Studio | Consolidato '):
+                d = piece.data
+                bpy.data.objects.remove(piece, do_unlink=True)
+                if d is not None and d.users == 0:
+                    bpy.data.meshes.remove(d)
+        for bucket_name in ('LED Studio | Flangia up', 'LED Studio | Flangia down',
+                            'LED Studio | Modulo PCB', 'LED Studio | Cavo flessibile',
+                            'LED Studio | Cavo rigido', 'LED Studio | Libreria'):
+            bucket = bpy.data.collections.get(bucket_name)
+            if bucket:
+                for piece in list(bucket.objects):
+                    bucket.objects.unlink(piece)
+                for ch in list(bucket.children):
+                    bucket.children.unlink(ch)
+                for parent in bpy.data.collections:
+                    if parent.library is None and bucket.name in parent.children:
+                        parent.children.unlink(bucket)
+                for sc in bpy.data.scenes:
+                    if sc.library is None and bucket.name in sc.collection.children:
+                        sc.collection.children.unlink(bucket)
+                bpy.data.collections.remove(bucket)
+        for storage in (bpy.data.scenes, bpy.data.collections, bpy.data.objects,
+                        bpy.data.meshes, bpy.data.materials, bpy.data.images, bpy.data.node_groups):
+            for blk in list(storage):
+                if blk.library is not None:
+                    try:
+                        storage.remove(blk)
+                    except (RuntimeError, ReferenceError):
+                        pass
+        for lib in list(bpy.data.libraries):
+            try:
+                bpy.data.libraries.remove(lib)
+            except (RuntimeError, ReferenceError):
+                pass
     if bpy.context.window and prev_scene is not None:
         bpy.context.window.scene = prev_scene
     bpy.ops.wm.save_mainfile()
@@ -2571,7 +2692,8 @@ def upgrade_inplace():
 
 def main():
     if '--' in sys.argv and '--upgrade-inplace' in sys.argv[sys.argv.index('--') + 1:]:
-        upgrade_inplace()
+        cli_args = sys.argv[sys.argv.index('--') + 1:]
+        upgrade_inplace(clean_assets='--clean-assets' in cli_args)
         return
     if bpy.app.version < (5, 3, 0):
         raise RuntimeError('LED Studio richiede Blender 5.3 o successivo.')
