@@ -84,11 +84,13 @@ class Graph:
             self.link(v, s)
         return n.outputs[0]
 
-    def transform(self, geo, translation=(0, 0, 0)):
+    def transform(self, geo, translation=(0, 0, 0), rotation=None):
         n = self.node('GeometryNodeTransform')
         n.inputs['Mode'].default_value = 'Components'
         self.link(geo, n.inputs['Geometry'])
         self.link(translation, n.inputs['Translation'])
+        if rotation is not None:
+            self.link(rotation, n.inputs['Rotation'])
         return n.outputs[0]
 
     def material(self, geo, mat):
@@ -141,7 +143,7 @@ def make_material(name, color, metallic=0, roughness=.4):
 
 
 def build_path():
-    """One planar spiral. An integer turn count ends it on +X."""
+    """One planar spiral, always winding in the +theta direction."""
     q = Graph('LED | 01 Percorso spirale e uscita')
     for name, value, lo, hi in [('Raggio mozzo', .026, .012, .08), ('Raggio avvolgimento', .078, .025, .18),
                                 ('Passo radiale', .002, .0012, .008), ('Giri uscita', .83, .25, 1.5),
@@ -149,6 +151,8 @@ def build_path():
         q.sock(name, default=value, lo=lo, hi=hi)
     q.sock('Con uscita', 'NodeSocketBool', default=True,
            description='Aggiunge il tratto libero in fondo alla spirale.')
+    q.sock('Rientro', 'NodeSocketBool', default=False,
+           description='Avvolge dall\'esterno verso il mozzo mantenendo lo stesso senso di rotazione.')
     p = q.i.outputs
     giri = q.node('GeometryNodeSwitch', 'Con uscita')
     giri.input_type = 'FLOAT'
@@ -158,14 +162,22 @@ def build_path():
     # Keep this radius clamp identical to the connector in group 00.
     radius = q.math('MAXIMUM', p['Raggio avvolgimento'], q.math('ADD', p['Raggio mozzo'], .003))
     turns = q.math('FLOOR', q.math('DIVIDE', q.math('SUBTRACT', radius, p['Raggio mozzo']), p['Passo radiale']))
+    r_end = q.math('ADD', p['Raggio mozzo'], q.math('MULTIPLY', turns, p['Passo radiale']))
     idx = q.node('GeometryNodeInputIndex').outputs['Index']
     t = q.math('MULTIPLY', q.math('DIVIDE', idx, 8191), q.math('ADD', turns, giri.outputs['Output']))
     tail = q.math('MAXIMUM', q.math('SUBTRACT', t, turns), 0)
-    expansion = q.math('MULTIPLY', p['Apertura uscita'], q.math('POWER', q.math('DIVIDE', tail, giri.outputs['Output']), 2))
-    r = q.math('ADD', q.math('ADD', p['Raggio mozzo'], q.math('MULTIPLY', t, p['Passo radiale'])), expansion)
+    expansion = q.math('MULTIPLY', p['Apertura uscita'],
+                       q.math('POWER', q.math('DIVIDE', tail, q.math('MAXIMUM', giri.outputs['Output'], .001)), 2))
+    r_out = q.math('ADD', q.math('ADD', p['Raggio mozzo'], q.math('MULTIPLY', t, p['Passo radiale'])), expansion)
+    r_in = q.math('SUBTRACT', r_end, q.math('MULTIPLY', t, p['Passo radiale']))
+    r_sw = q.node('GeometryNodeSwitch', 'Raggio spira')
+    r_sw.input_type = 'FLOAT'
+    q.link(p['Rientro'], r_sw.inputs['Switch'])
+    q.link(r_out, r_sw.inputs['False'])
+    q.link(r_in, r_sw.inputs['True'])
     angle = q.math('MULTIPLY', t, 2 * math.pi)
-    x = q.math('MULTIPLY', r, q.math('COSINE', angle))
-    y = q.math('MULTIPLY', r, q.math('SINE', angle))
+    x = q.math('MULTIPLY', r_sw.outputs['Output'], q.math('COSINE', angle))
+    y = q.math('MULTIPLY', r_sw.outputs['Output'], q.math('SINE', angle))
     line = q.node('GeometryNodeMeshLine')
     line.mode = 'OFFSET'
     line.inputs['Count'].default_value = 8192
@@ -239,9 +251,11 @@ def build_strip():
 
     mod_x = q.node('ShaderNodeSeparateXYZ')
     q.link(pos.outputs['Position'], mod_x.inputs['Vector'])
-    at_start = q.math('LESS_THAN', mod_x.outputs['X'], q.math('ADD', p['Min X'], .00001))
+    at_start = q.math('LESS_THAN', mod_x.outputs['X'], q.math('ADD', p['Min X'], .00002))
     at_end = q.math('GREATER_THAN', mod_x.outputs['X'],
-                    q.math('SUBTRACT', q.math('ADD', p['Min X'], p['Passo']), .00001))
+                    q.math('SUBTRACT', q.math('ADD', p['Min X'], p['Passo']), .00002))
+    cap.capture_items.new('BOOLEAN', 'Capo')
+    q.link(q.math('MAXIMUM', at_start, at_end), cap.inputs['Capo'])
     s_lo, s_hi = section(at_start, 'Estremità iniziale')
     e_lo, e_hi = section(at_end, 'Estremità finale')
     y_lo = q.math('MAXIMUM', s_lo['Y'], e_lo['Y'])
@@ -336,14 +350,15 @@ def build_strip():
     q.link(moved, placed.inputs['Position'])
     weld = q.node('GeometryNodeMergeByDistance', 'Salda le giunzioni')
     q.link(placed.outputs['Geometry'], weld.inputs['Geometry'])
+    q.link(cap.outputs['Capo'], weld.inputs['Selection'])
     weld.inputs['Mode'].default_value = 'All'
-    weld.inputs['Distance'].default_value = .00001
+    weld.inputs['Distance'].default_value = .00005
     edge_ang = q.node('GeometryNodeInputMeshEdgeAngle', 'Angolo spigoli')
-    sharp = q.node('GeometryNodeSetShadeSmooth', 'Spigoli vivi oltre 35 gradi')
+    sharp = q.node('GeometryNodeSetShadeSmooth', 'Spigoli vivi oltre 52 gradi')
     sharp.domain = 'EDGE'
     sharp.inputs['Shade Smooth'].default_value = False
     q.link(weld.outputs['Geometry'], sharp.inputs['Geometry'])
-    q.link(q.math('GREATER_THAN', edge_ang.outputs['Unsigned Angle'], math.radians(35)), sharp.inputs['Selection'])
+    q.link(q.math('GREATER_THAN', edge_ang.outputs['Unsigned Angle'], math.radians(52)), sharp.inputs['Selection'])
     out = q.node('GeometryNodeSwitch', 'Solo con un PCB scelto')
     out.input_type = 'GEOMETRY'
     q.link(has_module, out.inputs['Switch'])
@@ -705,51 +720,84 @@ def build_master(path, strip, reel, cable):
     q.link(box.outputs['Min'], lo.inputs['Vector'])
     q.link(box.outputs['Max'], hi.inputs['Vector'])
     passo = q.math('SUBTRACT', hi.outputs['X'], lo.outputs['X'], 'Passo')
+    spessore = q.math('SUBTRACT', hi.outputs['Y'], lo.outputs['Y'], 'Spessore')
     larghezza = q.math('SUBTRACT', hi.outputs['Z'], lo.outputs['Z'], 'Larghezza')
+    passo_rad = q.math('MAXIMUM', p['Passo radiale'], spessore, 'Passo radiale effettivo')
     livelli = q.math('MAXIMUM', q.math('FLOOR', q.math('DIVIDE', p['Altezza bobina'], larghezza)), 1, 'Livelli')
     margin = q.math('MULTIPLY', q.math('SUBTRACT', p['Altezza bobina'], q.math('MULTIPLY', livelli, larghezza)), .5)
     # Same clamp as group 01, so the riser meets the end of an integer spiral.
     radius = q.math('MAXIMUM', p['Raggio avvolgimento'], q.math('ADD', p['Raggio mozzo'], .003))
-    turns = q.math('FLOOR', q.math('DIVIDE', q.math('SUBTRACT', radius, p['Raggio mozzo']), p['Passo radiale']))
-    r_end = q.math('ADD', p['Raggio mozzo'], q.math('MULTIPLY', turns, p['Passo radiale']), 'Raggio fine spira')
+    turns = q.math('FLOOR', q.math('DIVIDE', q.math('SUBTRACT', radius, p['Raggio mozzo']), passo_rad))
+    r_end = q.math('ADD', p['Raggio mozzo'], q.math('MULTIPLY', turns, passo_rad), 'Raggio fine spira')
     enter, leave = q.repeat('Livelli')
+    leave.repeat_items.new('FLOAT', 'Angolo')
+    enter.inputs['Angolo'].default_value = 0.0
     as_int = q.node('FunctionNodeFloatToInt')
     as_int.rounding_mode = 'FLOOR'
     q.link(livelli, as_int.inputs['Float'])
     q.link(as_int.outputs['Integer'], enter.inputs['Iterations'])
     iteration = enter.outputs['Iteration']
+    ang_base = enter.outputs['Angolo']
     is_last = q.compare(iteration, q.math('SUBTRACT', livelli, 1), label='Ultimo')
     modulo = q.math('FLOORED_MODULO', iteration, 2)
     is_even = q.compare(modulo, 0, label='Pari')
     is_odd = q.compare(modulo, 1, label='Dispari')
     spiral = q.call(path, '01 Percorso')
     for socket in spiral.inputs:
-        if socket.name in p and socket.name != 'Con uscita':
+        if socket.name in p and socket.name not in ('Con uscita', 'Rientro', 'Passo radiale'):
             q.link(p[socket.name], socket)
+    q.link(passo_rad, spiral.inputs['Passo radiale'])
     q.link(q.math('MINIMUM', is_last, is_even, 'Con uscita'), spiral.inputs['Con uscita'])
-    rev = q.node('GeometryNodeReverseCurve')
-    q.link(spiral.outputs[0], rev.inputs['Curve'])
-    q.link(is_odd, rev.inputs['Selection'])
+    q.link(is_odd, spiral.inputs['Rientro'])
     radius_sw = q.node('GeometryNodeSwitch', 'Raggio raccordo')
     radius_sw.input_type = 'FLOAT'
     q.link(is_odd, radius_sw.inputs['Switch'])
     q.link(r_end, radius_sw.inputs['False'])
     q.link(p['Raggio mozzo'], radius_sw.inputs['True'])
-    riser = q.node('GeometryNodeCurvePrimitiveLine', 'Raccordo')
-    riser.mode = 'POINTS'
-    q.link(q.vec(radius_sw.outputs['Output'], 0, 0), riser.inputs['Start'])
-    q.link(q.vec(radius_sw.outputs['Output'], 0, larghezza), riser.inputs['End'])
-    with_riser = q.join(rev.outputs['Curve'], riser.outputs['Curve'])
+    # C2 quintic helical step-up (zero slope & zero curvature jump at ends) + C1 radial blend.
+    r_base = q.math('MAXIMUM', radius_sw.outputs['Output'], .005)
+    d_theta = q.math('MINIMUM', q.math('DIVIDE', q.math('MULTIPLY', larghezza, 7.0), r_base), math.pi * .85)
+    ramp_line = q.node('GeometryNodeMeshLine', 'Aste rampa')
+    ramp_line.mode = 'OFFSET'
+    ramp_line.inputs['Count'].default_value = 192
+    s_ramp = q.math('DIVIDE', q.node('GeometryNodeInputIndex').outputs['Index'], 191)
+    s3 = q.math('POWER', s_ramp, 3)
+    s_quintic = q.math('MULTIPLY', s3,
+                       q.math('ADD', 10.0, q.math('MULTIPLY', s_ramp,
+                              q.math('ADD', -15.0, q.math('MULTIPLY', 6.0, s_ramp)))))
+    bulge_sign = q.math('SUBTRACT', 1.0, q.math('MULTIPLY', is_odd, 2.0))
+    bulge_amp = q.math('MULTIPLY', bulge_sign,
+                       q.math('MULTIPLY', 2.1,
+                              q.math('MULTIPLY', passo_rad, q.math('DIVIDE', d_theta, 2 * math.pi))))
+    r_ramp = q.math('ADD', r_base,
+                    q.math('MULTIPLY', bulge_amp,
+                           q.math('SINE', q.math('MULTIPLY', s_ramp, math.pi))))
+    ang_ramp = q.math('MULTIPLY', s_ramp, d_theta)
+    ramp_pos = q.node('GeometryNodeSetPosition', 'Rampa elicoidale')
+    q.link(ramp_line.outputs['Mesh'], ramp_pos.inputs['Geometry'])
+    q.link(q.vec(q.math('MULTIPLY', r_ramp, q.math('COSINE', ang_ramp)),
+                 q.math('MULTIPLY', r_ramp, q.math('SINE', ang_ramp)),
+                 q.math('MULTIPLY', larghezza, s_quintic)), ramp_pos.inputs['Position'])
+    riser = q.node('GeometryNodeMeshToCurve', 'Curva raccordo')
+    riser.mode = 'EDGES'
+    q.link(ramp_pos.outputs['Geometry'], riser.inputs['Mesh'])
+    with_riser = q.join(spiral.outputs[0], riser.outputs['Curve'])
     layer_sw = q.node('GeometryNodeSwitch', 'Senza raccordo in coda')
     layer_sw.input_type = 'GEOMETRY'
     q.link(is_last, layer_sw.inputs['Switch'])
     q.link(with_riser, layer_sw.inputs['False'])
-    q.link(rev.outputs['Curve'], layer_sw.inputs['True'])
+    q.link(spiral.outputs[0], layer_sw.inputs['True'])
     z_layer = q.math('ADD', q.math('ADD', q.math('MULTIPLY', p['Altezza bobina'], -.5), margin),
                      q.math('ADD', q.math('MULTIPLY', larghezza, .5), q.math('MULTIPLY', iteration, larghezza)),
                      'Quota livello')
-    placed = q.transform(layer_sw.outputs['Output'], q.vec(0, 0, z_layer))
+    placed = q.transform(layer_sw.outputs['Output'], q.vec(0, 0, z_layer), q.vec(0, 0, ang_base))
     q.link(q.join(enter.outputs['Geometry'], placed), leave.inputs['Geometry'])
+    next_ang = q.node('GeometryNodeSwitch', 'Angolo prossimo livello')
+    next_ang.input_type = 'FLOAT'
+    q.link(is_last, next_ang.inputs['Switch'])
+    q.link(q.math('ADD', ang_base, d_theta), next_ang.inputs['False'])
+    q.link(ang_base, next_ang.inputs['True'])
+    q.link(next_ang.outputs['Output'], leave.inputs['Angolo'])
     # Weld the layers and risers into one spline so the base sweep has no joint.
     edges = q.node('GeometryNodeCurveToMesh', 'Percorso in spigoli')
     q.link(leave.outputs['Geometry'], edges.inputs['Curve'])
@@ -839,22 +887,28 @@ def build_master(path, strip, reel, cable):
                            q.math('MULTIPLY', q.math('SUBTRACT', livelli, 1), larghezza)),
                     'Quota ultimo livello')
     along = q.math('DIVIDE', q.node('GeometryNodeInputIndex').outputs['Index'], 3071)
-    outward_t = q.math('ADD', t_end.outputs['Output'], q.math('MULTIPLY', along, 3))
-    inward_t = q.math('MULTIPLY', q.math('MULTIPLY', along, 3), -1)
-    t_tail = q.node('GeometryNodeSwitch', 'Verso di uscita')
+    delta_t = q.math('MULTIPLY', along, 3)
+    outward_t = q.math('ADD', t_end.outputs['Output'], delta_t)
+    inward_t = q.math('MULTIPLY', delta_t, -1)
+    t_tail = q.node('GeometryNodeSwitch', 'Verso radiale di uscita')
     t_tail.input_type = 'FLOAT'
     q.link(last_even, t_tail.inputs['Switch'])
     q.link(outward_t, t_tail.inputs['True'])
     q.link(inward_t, t_tail.inputs['False'])
+    ang_param = q.node('GeometryNodeSwitch', 'Angolo prolungamento')
+    ang_param.input_type = 'FLOAT'
+    q.link(last_even, ang_param.inputs['Switch'])
+    q.link(outward_t, ang_param.inputs['True'])
+    q.link(delta_t, ang_param.inputs['False'])
     past = q.math('MAXIMUM', q.math('SUBTRACT', t_tail.outputs['Output'], turns), 0)
     expansion = q.math('MULTIPLY', p['Apertura uscita'],
                        q.math('POWER', q.math('DIVIDE', past, q.math('MAXIMUM', giri, .001)), 2))
     radius = q.math('MAXIMUM',
                     q.math('ADD', q.math('ADD', p['Raggio mozzo'],
-                                         q.math('MULTIPLY', t_tail.outputs['Output'], p['Passo radiale'])),
+                                         q.math('MULTIPLY', t_tail.outputs['Output'], passo_rad)),
                            expansion),
                     .004)
-    angle = q.math('MULTIPLY', t_tail.outputs['Output'], 2 * math.pi)
+    angle = q.math('ADD', leave.outputs['Angolo'], q.math('MULTIPLY', ang_param.outputs['Output'], 2 * math.pi))
     tail = q.node('GeometryNodeMeshLine', 'Prolungamento della spirale')
     tail.mode = 'OFFSET'
     tail.inputs['Count'].default_value = 3072
@@ -868,11 +922,11 @@ def build_master(path, strip, reel, cable):
     q.link(tail_pos.outputs['Geometry'], tail_curve.inputs['Mesh'])
     # Mesh to Curve can flip the spline. Keep the end that sits on the spiral.
     r_join = q.math('ADD', q.math('ADD', p['Raggio mozzo'],
-                                  q.math('MULTIPLY', t_end.outputs['Output'], p['Passo radiale'])),
+                                  q.math('MULTIPLY', t_end.outputs['Output'], passo_rad)),
                     q.math('MULTIPLY', p['Apertura uscita'], q.math('POWER', q.math('DIVIDE',
                         q.math('MAXIMUM', q.math('SUBTRACT', t_end.outputs['Output'], turns), 0),
                         q.math('MAXIMUM', giri, .001)), 2)))
-    ang_join = q.math('MULTIPLY', t_end.outputs['Output'], 2 * math.pi)
+    ang_join = q.math('ADD', leave.outputs['Angolo'], q.math('MULTIPLY', t_end.outputs['Output'], 2 * math.pi))
     expect = q.vec(q.math('MULTIPLY', r_join, q.math('COSINE', ang_join)),
                    q.math('MULTIPLY', r_join, q.math('SINE', ang_join)), z_last)
     head = q.node('GeometryNodeSampleCurve', 'Capo grezzo')
@@ -1246,6 +1300,8 @@ def hide_library_in_viewport():
 def bake_finished_mesh(objs, bucket, label, slice_step=None, align_ends=False):
     if not objs:
         return None
+    lib_col = ensure_collection()
+    lib_col.hide_viewport = False
     bpy.context.view_layer.update()
     deps = bpy.context.evaluated_depsgraph_get()
     bm = bmesh.new()
@@ -1346,26 +1402,45 @@ def bake_finished_mesh(objs, bucket, label, slice_step=None, align_ends=False):
                             v.co.x = target_hi
 
     if slice_step and slice_step > 1e-5:
-        xs = [v.co.x for v in bm.verts]
-        min_x, max_x = min(xs), max(xs)
-        n_cuts = min(int(math.ceil((max_x - min_x) / slice_step)), 400)
-        for k in range(1, n_cuts):
-            px = min_x + k * slice_step
-            if px >= max_x - 1e-4:
-                break
-            geom = set()
-            for e in bm.edges:
-                x0, x1 = e.verts[0].co.x, e.verts[1].co.x
-                if min(x0, x1) < px - 1e-6 and max(x0, x1) > px + 1e-6 and abs(x1 - x0) > slice_step * 1.15:
-                    geom.add(e)
-                    for f in e.link_faces:
-                        geom.add(f)
-                        for fe in f.edges:
-                            geom.add(fe)
-                            geom.add(fe.verts[0])
-                            geom.add(fe.verts[1])
-            if geom:
-                bmesh.ops.bisect_plane(bm, geom=list(geom), plane_co=(px, 0, 0), plane_no=(1, 0, 0))
+        bm.verts.index_update()
+        seen_c = set()
+        work_geom = []
+        for v in bm.verts:
+            if v.index in seen_c:
+                continue
+            c_v = []
+            c_e = set()
+            c_f = set()
+            stack = [v]
+            while stack:
+                cur = stack.pop()
+                if cur.index in seen_c:
+                    continue
+                seen_c.add(cur.index)
+                c_v.append(cur)
+                for ed in cur.link_edges:
+                    c_e.add(ed)
+                    for fc in ed.link_faces:
+                        c_f.add(fc)
+                    stack.append(ed.other_vert(cur))
+            c_xs = [cv.co.x for cv in c_v]
+            if max(c_xs) - min(c_xs) > slice_step * 2.0:
+                work_geom.extend(c_v)
+                work_geom.extend(c_e)
+                work_geom.extend(c_f)
+        if work_geom:
+            xs = [v.co.x for v in bm.verts]
+            min_x, max_x = min(xs), max(xs)
+            n_cuts = min(int(math.ceil((max_x - min_x) / slice_step)), 1000)
+            for k in range(1, n_cuts):
+                px = min_x + k * slice_step
+                if px >= max_x - 1e-4:
+                    break
+                ret = bmesh.ops.bisect_plane(bm, geom=work_geom, plane_co=(px, 0, 0), plane_no=(1, 0, 0))
+                for elem in ret['geom_cut']:
+                    if isinstance(elem, bmesh.types.BMEdge):
+                        elem[sharp_edges] = 0
+                work_geom = ret['geom']
         ngons = [f for f in bm.faces if len(f.verts) > 4]
         if ngons:
             bmesh.ops.triangulate(bm, faces=ngons)
@@ -1384,7 +1459,6 @@ def bake_finished_mesh(objs, bucket, label, slice_step=None, align_ends=False):
     out_obj.hide_render = True
     out_obj.hide_viewport = False
     bucket.objects.link(out_obj)
-    hide_library_in_viewport()
     return out_obj
 
 
@@ -1441,6 +1515,7 @@ def update_bobina(self, context):
         found['up'], found['down'] = found['down'], found['up']
     bake_finished_mesh(found['up'], up_bucket, 'Flangia up', slice_step=None)
     bake_finished_mesh(found['down'], down_bucket, 'Flangia down', slice_step=None)
+    hide_library_in_viewport()
     set_socket(obj, 'Flangia up', up_bucket)
     set_socket(obj, 'Flangia down', down_bucket)
     settings.status = ''
@@ -1466,7 +1541,8 @@ def update_pcb(self, context):
     if not vis_meshes:
         settings.status = 'Nessuna mesh visibile nel file: ' + self.pcb
         return
-    baked = bake_finished_mesh(vis_meshes, pcb_bucket, 'PCB', slice_step=.002, align_ends=True)
+    baked = bake_finished_mesh(vis_meshes, pcb_bucket, 'PCB', slice_step=.001, align_ends=True)
+    hide_library_in_viewport()
     if baked is None:
         settings.status = 'Geometria PCB vuota: ' + self.pcb
         return
@@ -1503,6 +1579,7 @@ def update_cavo(self, context):
         bake_finished_mesh(flex_objs, flex, 'Cavo flessibile', slice_step=max(step, .0004))
     for idx, r_obj in enumerate(rigid_objs):
         bake_finished_mesh([r_obj], rigid, 'Connettore %d' % idx, slice_step=None)
+    hide_library_in_viewport()
     set_socket(obj, 'Cavo flessibile', flex)
     set_socket(obj, 'Connettore', rigid)
     settings.status = ''
@@ -1623,8 +1700,8 @@ Le flange non si scalano: si allontanano fino alla luce richiesta.
 La larghezza della striscia è la misura Z del pezzo PCB, non uno slider.
 I livelli sono la parte intera di altezza / larghezza, minimo uno. Il resto
 resta come margine, centrato fra le flange.
-Il nastro è continuo: il livello dispari torna indietro e un raccordo verticale
-sale di una larghezza. L'uscita è disegnata solo se il nastro finisce all'esterno,
+Il nastro è continuo nello stesso senso di rotazione: il livello dispari rientra
+verso il mozzo e una rampa elicoidale morbida sale di una larghezza senza pieghe. L'uscita è disegnata solo se il nastro finisce all'esterno,
 cioè con un numero dispari di livelli.
 Il cavo parte da quel punto e ne segue la curva, con la stessa tangente.
 
@@ -1798,26 +1875,30 @@ def analyze_strip(obj):
     base_ids = max(islands, key=len)
     report['base_verts'] = len(base_ids)
     report['big_islands'] = sum(1 for ids in islands if len(ids) > 500)
+    has_arc = 'arco' in mesh.attributes
     cell = .004
     grid = {}
     span = []
     for i in base_ids:
         co = mesh.vertices[i].co
+        arc_val = mesh.attributes['arco'].data[i].value if has_arc else 0.0
         key = tuple(int(math.floor(axis / cell)) for axis in co)
-        grid.setdefault(key, []).append(Vector(co))
+        grid.setdefault(key, []).append((Vector(co), arc_val))
         if .03 < math.hypot(co.x, co.y) < .095:
             span.append(co.z)
     if span:
         report['base_span'] = (min(span), max(span))
 
-    def nearest(point):
+    def nearest(point, comp_arc):
         base_key = tuple(int(math.floor(axis / cell)) for axis in point)
         found = None
         gap = None
         for dz in range(-2, 3):
             for dy in range(-2, 3):
                 for dx in range(-2, 3):
-                    for co in grid.get((base_key[0] + dx, base_key[1] + dy, base_key[2] + dz), ()):
+                    for co, b_arc in grid.get((base_key[0] + dx, base_key[1] + dy, base_key[2] + dz), ()):
+                        if has_arc and abs(b_arc - comp_arc) > .005:
+                            continue
                         dist = (co - point).length
                         if gap is None or dist < gap:
                             gap = dist
@@ -1828,14 +1909,18 @@ def analyze_strip(obj):
         if ids is base_ids or len(ids) > 24:
             continue
         acc = Vector()
+        arc_acc = 0.0
         for i in ids:
             acc += mesh.vertices[i].co
+            if has_arc:
+                arc_acc += mesh.attributes['arco'].data[i].value
         center = acc / len(ids)
+        comp_arc = arc_acc / len(ids)
         radius = math.hypot(center.x, center.y)
         if radius < .02:
             continue
         report['components'] += 1
-        gap, found = nearest(center)
+        gap, found = nearest(center, comp_arc)
         if gap is not None:
             gaps.append(gap)
         if found is not None and gap < .006:
@@ -2296,7 +2381,13 @@ def upgrade_inplace():
     replace_text('LEGGIMI - LED Studio', README)
     replace_text('LED Studio Libreria', PANEL_SOURCE, module=True)
     load_panel()
+    prev_scene = bpy.context.window.scene if bpy.context.window else None
     for obj, _mod, _numeric in saved:
+        if bpy.context.window:
+            for sc in bpy.data.scenes:
+                if sc.library is None and obj.name in sc.collection.all_objects:
+                    bpy.context.window.scene = sc
+                    break
         if hasattr(obj, 'led_studio'):
             if obj.led_studio.bobina != 'NONE':
                 obj.led_studio.bobina = obj.led_studio.bobina
@@ -2304,6 +2395,8 @@ def upgrade_inplace():
                 obj.led_studio.pcb = obj.led_studio.pcb
             if obj.led_studio.cavo != 'NONE':
                 obj.led_studio.cavo = obj.led_studio.cavo
+    if bpy.context.window and prev_scene is not None:
+        bpy.context.window.scene = prev_scene
     bpy.ops.wm.save_mainfile()
     print('LED Studio: nodi e pannello aggiornati in-place (%d oggetti preservati).' % len(saved))
 
