@@ -143,12 +143,14 @@ def make_material(name, color, metallic=0, roughness=.4):
 
 
 def build_path():
-    """One planar spiral, always winding in the +theta direction."""
+    """One planar spiral, always winding in the +theta direction, with optional smooth Z exit."""
     q = Graph('LED | 01 Percorso spirale e uscita')
     for name, value, lo, hi in [('Raggio mozzo', .026, .012, .08), ('Raggio avvolgimento', .078, .025, .18),
                                 ('Passo radiale', .002, .0012, .008), ('Giri uscita', .83, .25, 1.5),
                                 ('Apertura uscita', .035, .005, .08)]:
         q.sock(name, default=value, lo=lo, hi=hi)
+    q.sock('Quota Z uscita', default=0.0, lo=-.1, hi=.1,
+           description='Spostamento verticale morbido del tratto finale di uscita, in metri.')
     q.sock('Con uscita', 'NodeSocketBool', default=True,
            description='Aggiunge il tratto libero in fondo alla spirale.')
     q.sock('Rientro', 'NodeSocketBool', default=False,
@@ -166,8 +168,16 @@ def build_path():
     idx = q.node('GeometryNodeInputIndex').outputs['Index']
     t = q.math('MULTIPLY', q.math('DIVIDE', idx, 8191), q.math('ADD', turns, giri.outputs['Output']))
     tail = q.math('MAXIMUM', q.math('SUBTRACT', t, turns), 0)
+    giri_safe = q.math('MAXIMUM', giri.outputs['Output'], .001)
+    s_exit = q.math('MINIMUM', q.math('MAXIMUM', q.math('DIVIDE', tail, giri_safe), 0.0), 1.0)
+    s3 = q.math('POWER', s_exit, 3)
+    s_quintic = q.math('MULTIPLY', s3,
+                       q.math('ADD', 10.0, q.math('MULTIPLY', s_exit,
+                              q.math('ADD', -15.0, q.math('MULTIPLY', 6.0, s_exit)))))
+    z_exit = q.math('MULTIPLY', p['Quota Z uscita'],
+                    q.math('MULTIPLY', s_quintic, q.math('GREATER_THAN', giri.outputs['Output'], .0001)))
     expansion = q.math('MULTIPLY', p['Apertura uscita'],
-                       q.math('POWER', q.math('DIVIDE', tail, q.math('MAXIMUM', giri.outputs['Output'], .001)), 2))
+                       q.math('POWER', q.math('DIVIDE', tail, giri_safe), 2))
     r_out = q.math('ADD', q.math('ADD', p['Raggio mozzo'], q.math('MULTIPLY', t, p['Passo radiale'])), expansion)
     r_in = q.math('SUBTRACT', r_end, q.math('MULTIPLY', t, p['Passo radiale']))
     r_sw = q.node('GeometryNodeSwitch', 'Raggio spira')
@@ -183,7 +193,7 @@ def build_path():
     line.inputs['Count'].default_value = 8192
     pos = q.node('GeometryNodeSetPosition', 'Spirale planare con uscita continua')
     q.link(line.outputs['Mesh'], pos.inputs['Geometry'])
-    q.link(q.vec(x, y, 0), pos.inputs['Position'])
+    q.link(q.vec(x, y, z_exit), pos.inputs['Position'])
     cv = q.node('GeometryNodeMeshToCurve')
     cv.mode = 'EDGES'
     q.link(pos.outputs['Geometry'], cv.inputs['Mesh'])
@@ -719,6 +729,10 @@ def build_master(path, strip, reel, cable):
                                 ('Passo radiale', .002, .0012, .008), ('Giri uscita', .83, .25, 1.5),
                                 ('Apertura uscita', .035, .005, .08)]:
         q.sock(name, default=value, lo=lo, hi=hi)
+    q.sock('Angolo uscita', default=0.0, lo=-180.0, hi=180.0,
+           description='Direzione angolare in gradi attorno alla bobina dove escono la fine del PCB e il cavo.')
+    q.sock('Quota Z uscita', default=0.0, lo=-.1, hi=.1,
+           description='Spostamento verticale in metri del tratto finale di uscita e del cavo.')
     q.sock('Altezza bobina', default=.014, lo=.002, hi=.2,
            description='Luce interna fra le flange, in metri. I livelli sono la parte intera di questa misura divisa per la larghezza Z del PCB.')
     p = q.i.outputs
@@ -749,19 +763,19 @@ def build_master(path, strip, reel, cable):
     iteration = enter.outputs['Iteration']
     ang_base = enter.outputs['Angolo']
     is_last = q.compare(iteration, q.math('SUBTRACT', livelli, 1), label='Ultimo')
-    modulo = q.math('FLOORED_MODULO', iteration, 2)
-    is_even = q.compare(modulo, 0, label='Pari')
-    is_odd = q.compare(modulo, 1, label='Dispari')
+    steps_from_end = q.math('SUBTRACT', q.math('SUBTRACT', livelli, 1), iteration)
+    is_inward = q.compare(q.math('FLOORED_MODULO', steps_from_end, 2), 1, label='Rientro')
     spiral = q.call(path, '01 Percorso')
     for socket in spiral.inputs:
-        if socket.name in p and socket.name not in ('Con uscita', 'Rientro', 'Passo radiale'):
+        if socket.name in p and socket.name not in ('Con uscita', 'Rientro', 'Passo radiale', 'Quota Z uscita'):
             q.link(p[socket.name], socket)
     q.link(passo_rad, spiral.inputs['Passo radiale'])
-    q.link(q.math('MINIMUM', is_last, is_even, 'Con uscita'), spiral.inputs['Con uscita'])
-    q.link(is_odd, spiral.inputs['Rientro'])
+    q.link(q.math('MULTIPLY', p['Quota Z uscita'], is_last), spiral.inputs['Quota Z uscita'])
+    q.link(is_last, spiral.inputs['Con uscita'])
+    q.link(is_inward, spiral.inputs['Rientro'])
     radius_sw = q.node('GeometryNodeSwitch', 'Raggio raccordo')
     radius_sw.input_type = 'FLOAT'
-    q.link(is_odd, radius_sw.inputs['Switch'])
+    q.link(is_inward, radius_sw.inputs['Switch'])
     q.link(r_end, radius_sw.inputs['False'])
     q.link(p['Raggio mozzo'], radius_sw.inputs['True'])
     # C2 quintic helical step-up (zero slope & zero curvature jump at ends) + C1 radial blend.
@@ -775,7 +789,7 @@ def build_master(path, strip, reel, cable):
     s_quintic = q.math('MULTIPLY', s3,
                        q.math('ADD', 10.0, q.math('MULTIPLY', s_ramp,
                               q.math('ADD', -15.0, q.math('MULTIPLY', 6.0, s_ramp)))))
-    bulge_sign = q.math('SUBTRACT', 1.0, q.math('MULTIPLY', is_odd, 2.0))
+    bulge_sign = q.math('SUBTRACT', 1.0, q.math('MULTIPLY', is_inward, 2.0))
     bulge_amp = q.math('MULTIPLY', bulge_sign,
                        q.math('MULTIPLY', 2.1,
                               q.math('MULTIPLY', passo_rad, q.math('DIVIDE', d_theta, 2 * math.pi))))
@@ -818,10 +832,16 @@ def build_master(path, strip, reel, cable):
     single = q.node('GeometryNodeMeshToCurve', 'Percorso unico')
     single.mode = 'EDGES'
     q.link(weld.outputs['Geometry'], single.inputs['Mesh'])
-    # Mesh to Curve does not keep the winding order. The path has to start at the hub.
+    # Mesh to Curve does not keep the winding order. The path must start at layer 0's true start.
+    first_inward = q.compare(q.math('FLOORED_MODULO', q.math('SUBTRACT', livelli, 1), 2), 1, label='Primo rientro')
+    r_start = q.node('GeometryNodeSwitch', 'Raggio iniziale')
+    r_start.input_type = 'FLOAT'
+    q.link(first_inward, r_start.inputs['Switch'])
+    q.link(p['Raggio mozzo'], r_start.inputs['False'])
+    q.link(r_end, r_start.inputs['True'])
     z0 = q.math('ADD', q.math('ADD', q.math('MULTIPLY', p['Altezza bobina'], -.5), margin),
                 q.math('MULTIPLY', larghezza, .5))
-    hub = q.vec(p['Raggio mozzo'], 0, z0)
+    start_ref = q.vec(r_start.outputs['Output'], 0, z0)
     path_head = q.node('GeometryNodeSampleCurve', 'Capo percorso')
     path_foot = q.node('GeometryNodeSampleCurve', 'Coda percorso')
     for sample, factor in ((path_head, 0.0), (path_foot, 1.0)):
@@ -829,15 +849,20 @@ def build_master(path, strip, reel, cable):
         sample.use_all_curves = True
         q.link(single.outputs['Curve'], sample.inputs['Curves'])
         sample.inputs['Factor'].default_value = factor
-    path_back = q.node('GeometryNodeReverseCurve', 'Il percorso parte dal mozzo')
+    path_back = q.node('GeometryNodeReverseCurve', 'Il percorso parte dall\'inizio')
     q.link(single.outputs['Curve'], path_back.inputs['Curve'])
     path_aimed = q.node('GeometryNodeSwitch', 'Verso del percorso')
     path_aimed.input_type = 'GEOMETRY'
-    q.link(q.math('LESS_THAN', q.vmath('DISTANCE', path_foot.outputs['Position'], hub),
-                  q.vmath('DISTANCE', path_head.outputs['Position'], hub)), path_aimed.inputs['Switch'])
+    q.link(q.math('LESS_THAN', q.vmath('DISTANCE', path_foot.outputs['Position'], start_ref),
+                  q.vmath('DISTANCE', path_head.outputs['Position'], start_ref)), path_aimed.inputs['Switch'])
     q.link(single.outputs['Curve'], path_aimed.inputs['False'])
     q.link(path_back.outputs['Curve'], path_aimed.inputs['True'])
-    single_curve = path_aimed.outputs['Output']
+    giri = p['Giri uscita']
+    exit_rad = q.math('RADIANS', p['Angolo uscita'], label='Angolo uscita rad')
+    raw_end_ang = q.math('ADD', leave.outputs['Angolo'],
+                         q.math('MULTIPLY', q.math('ADD', turns, giri), 2 * math.pi))
+    rot_offset = q.math('SUBTRACT', exit_rad, raw_end_ang, 'Compensa angolo uscita')
+    single_curve = q.transform(path_aimed.outputs['Output'], (0, 0, 0), q.vec(0, 0, rot_offset))
     pos = q.node('GeometryNodeInputPosition')
     radial = q.node('ShaderNodeSeparateXYZ')
     q.link(pos.outputs['Position'], radial.inputs['Vector'])
@@ -887,32 +912,16 @@ def build_master(path, strip, reel, cable):
     covered = q.node('GeometryNodeCurveLength', 'Tratto già sulla spirale')
     q.link(on_curve.outputs['Curve'], covered.inputs['Curve'])
     extra_len = q.math('MAXIMUM', q.math('SUBTRACT', cable_len, covered.outputs['Length']), 0)
-    giri = p['Giri uscita']
-    last_even = q.compare(q.math('FLOORED_MODULO', q.math('SUBTRACT', livelli, 1), 2), 0, label='Ultimo pari')
-    t_end = q.node('GeometryNodeSwitch', 'Parametro finale')
-    t_end.input_type = 'FLOAT'
-    q.link(last_even, t_end.inputs['Switch'])
-    q.link(q.math('ADD', turns, giri), t_end.inputs['True'])
-    t_end.inputs['False'].default_value = 0.0
-    z_last = q.math('ADD', q.math('ADD', q.math('MULTIPLY', p['Altezza bobina'], -.5), margin),
-                    q.math('ADD', q.math('MULTIPLY', larghezza, .5),
-                           q.math('MULTIPLY', q.math('SUBTRACT', livelli, 1), larghezza)),
-                    'Quota ultimo livello')
+    t_end = q.math('ADD', turns, giri)
+    z_last = q.math('ADD',
+                    q.math('ADD', q.math('ADD', q.math('MULTIPLY', p['Altezza bobina'], -.5), margin),
+                           q.math('ADD', q.math('MULTIPLY', larghezza, .5),
+                                  q.math('MULTIPLY', q.math('SUBTRACT', livelli, 1), larghezza))),
+                    p['Quota Z uscita'], 'Quota finale uscita')
     along = q.math('DIVIDE', q.node('GeometryNodeInputIndex').outputs['Index'], 4095)
     delta_t = q.math('MULTIPLY', along, 6)
-    outward_t = q.math('ADD', t_end.outputs['Output'], delta_t)
-    inward_t = q.math('MULTIPLY', delta_t, -1)
-    t_tail = q.node('GeometryNodeSwitch', 'Verso radiale di uscita')
-    t_tail.input_type = 'FLOAT'
-    q.link(last_even, t_tail.inputs['Switch'])
-    q.link(outward_t, t_tail.inputs['True'])
-    q.link(inward_t, t_tail.inputs['False'])
-    ang_param = q.node('GeometryNodeSwitch', 'Angolo prolungamento')
-    ang_param.input_type = 'FLOAT'
-    q.link(last_even, ang_param.inputs['Switch'])
-    q.link(outward_t, ang_param.inputs['True'])
-    q.link(delta_t, ang_param.inputs['False'])
-    past = q.math('MAXIMUM', q.math('SUBTRACT', t_tail.outputs['Output'], turns), 0)
+    outward_t = q.math('ADD', t_end, delta_t)
+    past = q.math('MAXIMUM', q.math('SUBTRACT', outward_t, turns), 0)
     giri_safe = q.math('MAXIMUM', giri, .001)
     past_exit = q.math('MINIMUM', past, giri_safe)
     after_exit = q.math('MAXIMUM', q.math('SUBTRACT', past, giri_safe), 0)
@@ -924,10 +933,10 @@ def build_master(path, strip, reel, cable):
                               after_exit))
     radius = q.math('MAXIMUM',
                     q.math('ADD', q.math('ADD', p['Raggio mozzo'],
-                                         q.math('MULTIPLY', t_tail.outputs['Output'], passo_rad)),
+                                         q.math('MULTIPLY', outward_t, passo_rad)),
                            expansion),
                     .004)
-    angle = q.math('ADD', leave.outputs['Angolo'], q.math('MULTIPLY', ang_param.outputs['Output'], 2 * math.pi))
+    angle = q.math('ADD', exit_rad, q.math('MULTIPLY', delta_t, 2 * math.pi))
     tail = q.node('GeometryNodeMeshLine', 'Prolungamento della spirale')
     tail.mode = 'OFFSET'
     tail.inputs['Count'].default_value = 4096
@@ -941,13 +950,10 @@ def build_master(path, strip, reel, cable):
     q.link(tail_pos.outputs['Geometry'], tail_curve.inputs['Mesh'])
     # Mesh to Curve can flip the spline. Keep the end that sits on the spiral.
     r_join = q.math('ADD', q.math('ADD', p['Raggio mozzo'],
-                                  q.math('MULTIPLY', t_end.outputs['Output'], passo_rad)),
-                    q.math('MULTIPLY', p['Apertura uscita'], q.math('POWER', q.math('DIVIDE',
-                        q.math('MAXIMUM', q.math('SUBTRACT', t_end.outputs['Output'], turns), 0),
-                        q.math('MAXIMUM', giri, .001)), 2)))
-    ang_join = q.math('ADD', leave.outputs['Angolo'], q.math('MULTIPLY', t_end.outputs['Output'], 2 * math.pi))
-    expect = q.vec(q.math('MULTIPLY', r_join, q.math('COSINE', ang_join)),
-                   q.math('MULTIPLY', r_join, q.math('SINE', ang_join)), z_last)
+                                  q.math('MULTIPLY', t_end, passo_rad)),
+                    p['Apertura uscita'])
+    expect = q.vec(q.math('MULTIPLY', r_join, q.math('COSINE', exit_rad)),
+                   q.math('MULTIPLY', r_join, q.math('SINE', exit_rad)), z_last)
     head = q.node('GeometryNodeSampleCurve', 'Capo grezzo')
     foot = q.node('GeometryNodeSampleCurve', 'Coda grezza')
     for sample, factor in ((head, 0.0), (foot, 1.0)):
@@ -1064,6 +1070,68 @@ def look_at(obj, target):
     obj.rotation_euler = (Vector(target) - obj.location).to_track_quat('-Z', 'Y').to_euler()
 
 
+def setup_compositor_passes(scene, enable_defaults=True):
+    """Enable standard render passes and wire a Blender 5.3 MultiLayer EXR File Output."""
+    if not scene.view_layers:
+        return
+    vl = scene.view_layers[0]
+    if enable_defaults:
+        for attr in ('use_pass_combined', 'use_pass_z', 'use_pass_normal',
+                     'use_pass_ambient_occlusion', 'use_pass_diffuse_color',
+                     'use_pass_diffuse_direct', 'use_pass_diffuse_indirect',
+                     'use_pass_glossy_color', 'use_pass_glossy_direct',
+                     'use_pass_glossy_indirect', 'use_pass_emit', 'use_pass_shadow',
+                     'use_pass_cryptomatte_object', 'use_pass_cryptomatte_material',
+                     'use_pass_cryptomatte_asset', 'use_pass_cryptomatte_accurate'):
+            if hasattr(vl, attr):
+                setattr(vl, attr, True)
+
+    existing = scene.compositing_node_group
+    if existing is not None and not existing.name.startswith(PREFIX + ' | Passes'):
+        return
+
+    safe_name = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_'
+                        for ch in scene.name.replace(PREFIX + ' | ', '').strip()).strip('_') or 'scene'
+    tree_name = PREFIX + ' | Passes ' + safe_name
+    nt = existing
+    if nt is None:
+        nt = bpy.data.node_groups.get(tree_name)
+    if nt is None:
+        nt = bpy.data.node_groups.new(tree_name, 'CompositorNodeTree')
+    nt.nodes.clear()
+    for item in list(nt.interface.items_tree):
+        nt.interface.remove(item)
+    nt.interface.new_socket('Image', in_out='OUTPUT', socket_type='NodeSocketColor')
+
+    rl = nt.nodes.new('CompositorNodeRLayers')
+    rl.scene = scene
+    rl.layer = vl.name
+    rl.location = (-350, 0)
+    go = nt.nodes.new('NodeGroupOutput')
+    go.location = (250, 120)
+    nt.links.new(rl.outputs['Image'], go.inputs['Image'])
+
+    fo = nt.nodes.new('CompositorNodeOutputFile')
+    fo.name = PREFIX + ' | Output Passes EXR'
+    fo.label = 'Salva Pass EXR'
+    fo.location = (250, -140)
+    fo.directory = '//renders/'
+    fo.file_name = safe_name + '_passes'
+    fo.format.file_format = 'OPEN_EXR_MULTILAYER'
+    fo.format.color_depth = '32'
+
+    sock_map = {'VALUE': 'FLOAT', 'VECTOR': 'VECTOR', 'RGBA': 'RGBA', 'INT': 'INT', 'BOOLEAN': 'BOOLEAN'}
+    for out_s in rl.outputs:
+        if not out_s.enabled or out_s.name == 'Noisy Image':
+            continue
+        stype = sock_map.get(out_s.type, 'RGBA')
+        fo.file_output_items.new(stype, out_s.name)
+        nt.links.new(out_s, fo.inputs[out_s.name])
+
+    scene.use_nodes = True
+    scene.compositing_node_group = nt
+
+
 def setup_scene(name, group, values, floor_mat):
     scene = bpy.data.scenes.new(PREFIX + ' | ' + name)
     scene.unit_settings.system = 'METRIC'
@@ -1116,6 +1184,7 @@ def setup_scene(name, group, values, floor_mat):
     scene.render.filepath = '//renders/' + name + '.png'
     scene.view_settings.view_transform = 'AgX'
     scene['NOTE'] = 'Scegli bobina, PCB e cavo dalle cartelle. Quote in metri. Nessuna lunghezza commerciale garantita.'
+    setup_compositor_passes(scene, enable_defaults=True)
     scene.view_layers[0].objects.active = obj
     obj.select_set(True, view_layer=scene.view_layers[0])
     return scene, obj
@@ -1792,6 +1861,78 @@ class LED_OT_reload_assets(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class LED_OT_sync_passes(bpy.types.Operator):
+    bl_idname = 'led_studio.sync_passes'
+    bl_label = 'Aggiorna Pass EXR'
+    bl_description = 'Collega i Render Passes attivi nel nodo File Output MultiLayer EXR (//renders/)'
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene is not None and bool(context.scene.view_layers)
+
+    def execute(self, context):
+        sc = context.scene
+        vl = sc.view_layers[0]
+        for attr in ('use_pass_combined', 'use_pass_z', 'use_pass_normal',
+                     'use_pass_ambient_occlusion', 'use_pass_diffuse_color',
+                     'use_pass_diffuse_direct', 'use_pass_diffuse_indirect',
+                     'use_pass_glossy_color', 'use_pass_glossy_direct',
+                     'use_pass_glossy_indirect', 'use_pass_emit', 'use_pass_shadow',
+                     'use_pass_cryptomatte_object', 'use_pass_cryptomatte_material',
+                     'use_pass_cryptomatte_asset', 'use_pass_cryptomatte_accurate'):
+            if hasattr(vl, attr) and not getattr(vl, attr):
+                setattr(vl, attr, True)
+        safe_name = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_'
+                            for ch in sc.name.replace('LED Studio | ', '').strip()).strip('_') or 'scene'
+        nt = sc.compositing_node_group
+        if nt is None or not nt.name.startswith('LED Studio | Passes'):
+            nt = bpy.data.node_groups.new('LED Studio | Passes ' + safe_name, 'CompositorNodeTree')
+        nt.nodes.clear()
+        for item in list(nt.interface.items_tree):
+            nt.interface.remove(item)
+        nt.interface.new_socket('Image', in_out='OUTPUT', socket_type='NodeSocketColor')
+        rl = nt.nodes.new('CompositorNodeRLayers')
+        rl.scene = sc
+        rl.layer = vl.name
+        rl.location = (-350, 0)
+        go = nt.nodes.new('NodeGroupOutput')
+        go.location = (250, 120)
+        nt.links.new(rl.outputs['Image'], go.inputs['Image'])
+        fo = nt.nodes.new('CompositorNodeOutputFile')
+        fo.name = 'LED Studio | Output Passes EXR'
+        fo.label = 'Salva Pass EXR'
+        fo.location = (250, -140)
+        fo.directory = '//renders/'
+        fo.file_name = safe_name + '_passes'
+        fo.format.file_format = 'OPEN_EXR_MULTILAYER'
+        fo.format.color_depth = '32'
+        sock_map = {'VALUE': 'FLOAT', 'VECTOR': 'VECTOR', 'RGBA': 'RGBA', 'INT': 'INT', 'BOOLEAN': 'BOOLEAN'}
+        for out_s in rl.outputs:
+            if not out_s.enabled or out_s.name == 'Noisy Image':
+                continue
+            stype = sock_map.get(out_s.type, 'RGBA')
+            fo.file_output_items.new(stype, out_s.name)
+            nt.links.new(out_s, fo.inputs[out_s.name])
+        sc.use_nodes = True
+        sc.compositing_node_group = nt
+        return {'FINISHED'}
+
+
+class LED_OT_toggle_exr_main(bpy.types.Operator):
+    bl_idname = 'led_studio.toggle_exr_main'
+    bl_label = 'Usa MultiLayer EXR su F12'
+    bl_description = 'Imposta il formato principale di render su OpenEXR MultiLayer (con tutti i pass) o PNG'
+
+    def execute(self, context):
+        img_s = context.scene.render.image_settings
+        if img_s.file_format == 'OPEN_EXR_MULTILAYER':
+            img_s.file_format = 'PNG'
+        else:
+            img_s.file_format = 'OPEN_EXR_MULTILAYER'
+            img_s.color_depth = '32'
+        return {'FINISHED'}
+
+
 class LEDStudioSettings(bpy.types.PropertyGroup):
     bobina: bpy.props.EnumProperty(name='Bobina', items=bobina_items, update=update_bobina)
     pcb: bpy.props.EnumProperty(name='PCB', items=pcb_items, update=update_pcb)
@@ -1824,6 +1965,17 @@ class LED_PT_library(bpy.types.Panel):
         missing = [name for name in ('bobine', 'pcb', 'cavi') if not os.path.isdir(os.path.join(root, name))]
         if missing:
             layout.label(text='Crea accanto al file: ' + ', '.join(missing) + '.')
+        box = layout.box()
+        box.label(text='Render Passes (EXR)', icon='RENDERLAYERS')
+        sc = context.scene
+        if sc is not None:
+            box.prop(sc.render.image_settings, 'file_format', text='Formato')
+            row = box.row(align=True)
+            row.operator('led_studio.sync_passes', icon='NODETREE')
+            is_exr = sc.render.image_settings.file_format == 'OPEN_EXR_MULTILAYER'
+            row.operator('led_studio.toggle_exr_main',
+                         text='Passa a PNG' if is_exr else 'Salva F12 in EXR',
+                         icon='IMAGE_DATA')
 
 
 @persistent
@@ -1835,6 +1987,10 @@ def on_load_post(_dummy):
 def register():
     if not hasattr(bpy.types, 'LED_OT_reload_assets'):
         bpy.utils.register_class(LED_OT_reload_assets)
+    if not hasattr(bpy.types, 'LED_OT_sync_passes'):
+        bpy.utils.register_class(LED_OT_sync_passes)
+    if not hasattr(bpy.types, 'LED_OT_toggle_exr_main'):
+        bpy.utils.register_class(LED_OT_toggle_exr_main)
     if not hasattr(bpy.types, 'LEDStudioSettings'):
         bpy.utils.register_class(LEDStudioSettings)
     if not hasattr(bpy.types, 'LED_PT_library'):
@@ -1859,6 +2015,10 @@ def unregister():
         bpy.utils.unregister_class(LED_PT_library)
     if hasattr(bpy.types, 'LEDStudioSettings'):
         bpy.utils.unregister_class(LEDStudioSettings)
+    if hasattr(bpy.types, 'LED_OT_toggle_exr_main'):
+        bpy.utils.unregister_class(LED_OT_toggle_exr_main)
+    if hasattr(bpy.types, 'LED_OT_sync_passes'):
+        bpy.utils.unregister_class(LED_OT_sync_passes)
     if hasattr(bpy.types, 'LED_OT_reload_assets'):
         bpy.utils.unregister_class(LED_OT_reload_assets)
 
@@ -2436,16 +2596,64 @@ def exercise_library(scene, obj, values):
         obj.led_studio.cavo = 'cavo bianco.blend'
         if obj.led_studio.status:
             raise RuntimeError(obj.led_studio.status)
-        for height in (.010, .020, .028):
+        for height in (.010, .020, .028, .040):
             set_input(mod, 'Altezza bobina', height)
             print('LED_CHECK altezza', height)
             check_cable(obj)
+            bpy.context.view_layer.update()
+            ev_h = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+            mh = ev_h.to_mesh()
+            s_arcs = [(mh.attributes['arco'].data[i].value, mh.vertices[i].co.copy())
+                      for i in range(len(mh.vertices)) if mh.attributes['nastro'].data[i].value > .5]
+            ev_h.to_mesh_clear()
+            max_a = max(a for a, _ in s_arcs)
+            end_r = sum(math.hypot(co.x, co.y) for a, co in s_arcs if a > max_a - .0001) / sum(
+                1 for a, _ in s_arcs if a > max_a - .0001)
+            if end_r < .095:
+                raise RuntimeError('Uscita finita nel mozzo a altezza %.3f m (r=%.4f m)' % (height, end_r))
+
+        set_input(mod, 'Altezza bobina', .040)
+        set_input(mod, 'Angolo uscita', 90.0)
+        set_input(mod, 'Quota Z uscita', -.015)
+        print('LED_CHECK controllo angolo e quota Z uscita')
+        check_cable(obj)
+        bpy.context.view_layer.update()
+        ev_c = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        mc = ev_c.to_mesh()
+        s_end = [mc.vertices[i].co.copy() for i in range(len(mc.vertices))
+                 if mc.attributes['nastro'].data[i].value > .5 and mc.attributes['arco'].data[i].value > 35.0]
+        c_pts = [(mc.attributes['origine'].data[i].vector.x, mc.vertices[i].co.copy())
+                 for i in range(len(mc.vertices)) if mc.attributes['cavo'].data[i].value > .5]
+        ev_c.to_mesh_clear()
+        tip_x = max(ox for ox, _ in c_pts)
+        tip_avg = sum((co for ox, co in c_pts if ox > tip_x - .002), Vector()) / sum(
+            1 for ox, _ in c_pts if ox > tip_x - .002)
+        if tip_avg.z > .005:
+            raise RuntimeError('Quota Z uscita non ha spostato il cavo in basso: z=%.4f m' % tip_avg.z)
+        set_input(mod, 'Angolo uscita', 0.0)
+        set_input(mod, 'Quota Z uscita', 0.0)
+
         set_input(mod, 'Altezza bobina', .010)
         set_input(mod, 'Giri uscita', 1.15)
         set_input(mod, 'Apertura uscita', .05)
         set_input(mod, 'Raggio avvolgimento', .092)
         print('LED_CHECK variazione spirale')
         check_cable(obj)
+
+        # Verify MultiLayer EXR Render Passes output via CompositorNodeOutputFile
+        old_samples, old_rx, old_ry = scene.cycles.samples, scene.render.resolution_x, scene.render.resolution_y
+        scene.cycles.samples = 2
+        scene.render.resolution_x = 64
+        scene.render.resolution_y = 64
+        bpy.ops.render.render(write_still=True)
+        scene.cycles.samples, scene.render.resolution_x, scene.render.resolution_y = old_samples, old_rx, old_ry
+        exr_path = os.path.join(temp, 'renders', '01_Bianco_8mm_passes.exr')
+        if not os.path.isfile(exr_path) or os.path.getsize(exr_path) < 10000:
+            raise RuntimeError('Salvataggio Render Passes EXR fallito: ' + exr_path)
+        with open(exr_path, 'rb') as f_exr:
+            if b'BlenderMultiChannel' not in f_exr.read(256):
+                raise RuntimeError('Il file EXR salvato non e MultiLayer')
+        print('LED_CHECK render passes EXR ok |', os.path.getsize(exr_path), 'bytes')
         obj.led_studio.cavo = 'NONE'
         if obj.led_studio.status:
             raise RuntimeError(obj.led_studio.status)
@@ -2583,7 +2791,8 @@ def exercise_library(scene, obj, values):
                 bpy.data.materials.remove(local)
         for reset_name, reset_val in (('Altezza bobina', .014), ('Raggio mozzo', .026),
                                       ('Giri uscita', .83), ('Apertura uscita', .035),
-                                      ('Raggio avvolgimento', .078), ('Passo radiale', .002)):
+                                      ('Raggio avvolgimento', .078), ('Passo radiale', .002),
+                                      ('Angolo uscita', 0.0), ('Quota Z uscita', 0.0)):
             set_input(obj.modifiers['Configurazione prodotto'], reset_name, reset_val)
         for name, value in values.items():
             set_input(obj.modifiers['Configurazione prodotto'], name, value)
@@ -2686,6 +2895,9 @@ def upgrade_inplace(clean_assets=False):
                 pass
     if bpy.context.window and prev_scene is not None:
         bpy.context.window.scene = prev_scene
+    for sc in bpy.data.scenes:
+        if sc.library is None and sc.name.startswith(PREFIX + ' | '):
+            setup_compositor_passes(sc, enable_defaults=True)
     bpy.ops.wm.save_mainfile()
     print('LED Studio: nodi e pannello aggiornati in-place (%d oggetti preservati).' % len(saved))
 

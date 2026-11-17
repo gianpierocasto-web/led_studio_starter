@@ -33,9 +33,24 @@ LED_Studio_Starter/
    - **`Raggio mozzo`**: raggio di partenza della prima spira (impostarlo **maggiore** del colletto interno della bobina, es. `>= 0.033 m` su mozzo da `32 mm`).
    - **`Raggio avvolgimento`**: raggio massimo delle spire dentro la flangia.
    - **`Passo radiale`**: distanza radiale tra un giro e il successivo (viene comunque limitato automaticamente allo spessore `Y` reale del PCB per evitare compenetrazioni).
-   - **`Giri uscita`** / **`Apertura uscita`**: lunghezza e apertura del tratto libero finale prima del cavo.
+   - **`Giri uscita`** / **`Apertura uscita`**: lunghezza e apertura del tratto libero finale prima del cavo (funzionano **sempre all'esterno** della bobina con qualsiasi numero di livelli, anche pari).
+   - **`Angolo uscita`**: direzione angolare in gradi (`-180° .. +180°`) attorno alla bobina dove escono fine PCB e cavo; resta fissa rispetto alla camera anche variando `Altezza bobina`.
+   - **`Quota Z uscita`**: spostamento verticale morbido (`-0.10 .. +0.10 m`) del tratto finale di uscita e del cavo, utile per abbassarlo verso il piano o allinearlo su bobine alte.
    - **`Passo deformazione cavo`**: densità longitudinale della guaina lungo `X` (default `0.001 m = 1 mm`).
    - **`Innesto cavo`**: di quanto il cappuccio/connettore iniziale del cavo scorre sopra l'estremità finale del PCB (calcolato in automatico all'importazione se presente una tasca con pin interni, modificabile a mano).
+
+---
+
+## Salvataggio Render e Render Passes (EXR MultiLayer)
+
+- Ogni scena è già configurata con i principali **Render Passes** di Cycles abilitati (`Combined`, `Depth/Z`, `Normal`, `Ambient Occlusion`, `Diffuse/Glossy Direct/Indirect/Color`, `Emission`, `Shadow`, `Cryptomatte Object/Material/Asset`) e un nodo `CompositorNodeOutputFile` collegato al Compositor.
+- Premendo **`F12`** vengono salvati automaticamente nella cartella `renders/` accanto al file:
+  - il render principale (`PNG` di default, o `OPEN_EXR_MULTILAYER` se cambi formato), e
+  - il file **`<scena>_passes.exr`** in formato **OpenEXR MultiLayer 32-bit** con tutti i pass separati pronti per il compositing.
+- Nel pannello **Libreria bobine, PCB e cavi → Render Passes (EXR)** trovi:
+  - il selettore rapido **`Formato`** (`PNG` / `OPEN_EXR_MULTILAYER`),
+  - **`Salva F12 in EXR` / `Passa a PNG`** per commutare in un clic il formato principale di `F12` (e di `Image → Save As`),
+  - **`Aggiorna Pass EXR`** nel caso tu abiliti/disabiliti nuovi pass manualmente in *View Layer → Passes* e voglia riallineare il nodo File Output.
 
 ---
 
