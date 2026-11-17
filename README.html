@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LED Studio Starter (Blender 5.3+) — Guida d'uso e Best Practices</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --surface-alt: #f0f3f7;
+      --text: #1b222c;
+      --muted: #5a6577;
+      --border: #dfe4ec;
+      --accent: #0f62fe;
+      --accent-soft: #e8f0fe;
+      --warn-bg: #fff8e6;
+      --warn-border: #f0c36d;
+      --ok-bg: #eefaf3;
+      --ok-border: #6bc490;
+      --code-bg: #181d25;
+      --code-fg: #e7edf5;
+      --inline-bg: #edf1f7;
+      --shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #11151b;
+        --surface: #181d25;
+        --surface-alt: #202733;
+        --text: #e6ebf2;
+        --muted: #9aa6b8;
+        --border: #2a3342;
+        --accent: #5a9bff;
+        --accent-soft: rgba(90, 155, 255, 0.14);
+        --warn-bg: rgba(240, 195, 109, 0.12);
+        --warn-border: #8a6d2f;
+        --ok-bg: rgba(107, 196, 144, 0.12);
+        --ok-border: #2f7d53;
+        --code-bg: #0d1016;
+        --code-fg: #e7edf5;
+        --inline-bg: #232b38;
+        --shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.62;
+    }
+
+    .layout {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 20px 56px;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 28px;
+      align-items: start;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .sidebar h2 {
+      margin: 0 0 10px;
+      font-size: 0.8rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .nav {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .nav a {
+      text-decoration: none;
+      color: var(--text);
+      font-size: 0.92rem;
+      padding: 6px 10px;
+      border-radius: 7px;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .nav a.sub {
+      padding-left: 20px;
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+
+    .nav a:hover {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .main {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      min-width: 0;
+    }
+
+    .hero {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 26px 28px;
+      box-shadow: var(--shadow);
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 3px 10px;
+      border-radius: 999px;
+      margin-bottom: 10px;
+    }
+
+    .hero h1 {
+      margin: 0 0 8px;
+      font-size: 1.85rem;
+      line-height: 1.2;
+    }
+
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.02rem;
+    }
+
+    section.card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 24px 28px;
+      box-shadow: var(--shadow);
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 1.32rem;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    h3 {
+      margin: 20px 0 10px;
+      font-size: 1.08rem;
+      color: var(--accent);
+    }
+
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 0 0 14px; padding-left: 22px; }
+    li { margin-bottom: 6px; }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.89em;
+      background: var(--inline-bg);
+      padding: 2px 6px;
+      border-radius: 5px;
+    }
+
+    pre {
+      margin: 0 0 16px;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 16px 18px;
+      border-radius: 10px;
+      overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.88rem;
+      line-height: 1.5;
+    }
+
+    .callout {
+      border-radius: 10px;
+      padding: 13px 16px;
+      margin: 12px 0 16px;
+      border: 1px solid var(--border);
+      background: var(--surface-alt);
+    }
+
+    .callout.warn {
+      background: var(--warn-bg);
+      border-color: var(--warn-border);
+    }
+
+    .callout.ok {
+      background: var(--ok-bg);
+      border-color: var(--ok-border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0 14px;
+      font-size: 0.94rem;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface-alt);
+      font-weight: 600;
+      font-size: 0.86rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 10px 0 16px;
+    }
+
+    .axis-card {
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+
+    .axis-card strong {
+      display: block;
+      font-size: 1rem;
+      margin-bottom: 4px;
+      color: var(--accent);
+    }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.84rem;
+      padding-top: 6px;
+    }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { position: static; }
+      .grid-3 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <h2>Indice guida</h2>
+      <nav class="nav">
+        <a href="#struttura">Struttura minima</a>
+        <a href="#guida-rapida">Guida rapida d'uso</a>
+        <a href="#parametri">Parametri principali</a>
+        <a href="#render-passes">Render Passes (EXR)</a>
+        <a href="#best-practices">Best practices asset</a>
+        <a class="sub" href="#regole-comuni">Regole comuni</a>
+        <a class="sub" href="#bobine">1. Bobine</a>
+        <a class="sub" href="#pcb">2. Strisce LED / PCB</a>
+        <a class="sub" href="#cavi">3. Cavi di alimentazione</a>
+        <a href="#checklist">Checklist viewport</a>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <header class="hero">
+        <span class="badge">Blender 5.3+ · Geometry Nodes</span>
+        <h1>LED Studio Starter</h1>
+        <p>Generatore parametrico in Geometry Nodes per visualizzare e renderizzare strisce LED avvolte su bobina con cavo di alimentazione in continuità, caricando asset esterni dalle cartelle <code>bobine/</code>, <code>pcb/</code> e <code>cavi/</code>.</p>
+      </header>
+
+      <section id="struttura" class="card">
+        <h2>Struttura minima di lavoro</h2>
+        <pre>LED_Studio_Starter/
+├── LED_Studio.blend               # File di lavoro principale (luce, camera, set)
+├── aggiorna_nodi_led_studio.bat   # Aggiorna in-place i soli nodi geometrici senza toccare il set
+├── scripts/led_starter.py         # Generatore e gestore nodi/pannello
+├── bobine/                        # Un file .blend per modello di bobina
+├── pcb/                           # Un file .blend per modulo striscia/PCB
+└── cavi/                          # Un file .blend per cavo di alimentazione</pre>
+        <ul>
+          <li>Il menu a tendina (<strong>Bobina</strong>, <strong>PCB</strong>, <strong>Cavo</strong>) eredita automaticamente il nome del file <code>.blend</code>.</li>
+          <li>Puoi personalizzare liberamente camera, luci, fondale, World e impostazioni di render dentro <code>LED_Studio.blend</code>: l'importante è non rinominare il modificatore <code>Configurazione prodotto</code>, non cancellare il testo interno <code>LED Studio Libreria</code> e non lanciare lo script di generazione da zero sullo stesso file.</li>
+          <li>Per aggiornare i nodi geometrici dopo un aggiornamento di <code>scripts/led_starter.py</code>, chiudi o salva il file e avvia con doppio clic <code>aggiorna_nodi_led_studio.bat</code>.</li>
+        </ul>
+      </section>
+
+      <section id="guida-rapida" class="card">
+        <h2>Guida rapida d'uso</h2>
+        <ol>
+          <li>Apri <code>LED_Studio.blend</code> con <strong>Blender 5.3+</strong> (con <em>Auto Run Python Scripts</em> abilitato; in caso contrario premi Play una volta sul testo <code>LED Studio Libreria</code> nel Text Editor).</li>
+          <li>Seleziona l'oggetto generatore (<code>LED_02_Caldo_10mm</code> o equivalente) e vai nella scheda <strong>Modifiers</strong> &rarr; pannello <strong>Libreria bobine, PCB e cavi</strong>.</li>
+          <li>Scegli <strong>Bobina</strong>, <strong>PCB</strong> e <strong>Cavo</strong>.</li>
+          <li>Se modifichi e salvi un file esterno in <code>bobine/</code>, <code>pcb/</code> o <code>cavi/</code>, clicca <strong>Ricarica asset</strong> per ri-valutare subito la mesh senza riavviare Blender.</li>
+          <li>Regola i parametri sul modificatore <code>Configurazione prodotto</code>.</li>
+        </ol>
+
+        <h3 id="parametri">Parametri sul modificatore Configurazione prodotto</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Parametro</th>
+              <th>Funzione</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Altezza bobina</code></td>
+              <td>Distanza interna fra i due dischi della bobina (determina automaticamente il numero di livelli interi della striscia).</td>
+            </tr>
+            <tr>
+              <td><code>Raggio mozzo</code></td>
+              <td>Raggio di partenza della prima spira (impostarlo <strong>maggiore</strong> del colletto interno della bobina, es. <code>&gt;= 0.033 m</code> su mozzo da <code>32 mm</code>).</td>
+            </tr>
+            <tr>
+              <td><code>Raggio avvolgimento</code></td>
+              <td>Raggio massimo delle spire dentro la flangia.</td>
+            </tr>
+            <tr>
+              <td><code>Passo radiale</code></td>
+              <td>Distanza radiale tra un giro e il successivo (limitata automaticamente in basso allo spessore <code>Y</code> reale del PCB per evitare compenetrazioni).</td>
+            </tr>
+            <tr>
+              <td><code>Giri uscita</code> / <code>Apertura uscita</code></td>
+              <td>Lunghezza e apertura del tratto libero finale prima del cavo (funzionano <strong>sempre all'esterno</strong> della bobina con qualsiasi numero di livelli, anche pari).</td>
+            </tr>
+            <tr>
+              <td><code>Angolo uscita</code></td>
+              <td>Direzione angolare in gradi (<code>-180° .. +180°</code>) attorno alla bobina dove escono fine PCB e cavo; resta fissa rispetto alla camera anche variando <code>Altezza bobina</code>.</td>
+            </tr>
+            <tr>
+              <td><code>Quota Z uscita</code></td>
+              <td>Spostamento verticale morbido (<code>-0.10 .. +0.10 m</code>) del tratto finale di uscita e del cavo, utile per abbassarlo verso il piano o allinearlo su bobine alte.</td>
+            </tr>
+            <tr>
+              <td><code>Passo deformazione cavo</code></td>
+              <td>Densità longitudinale della guaina lungo <code>X</code> (default <code>0.001 m = 1 mm</code>).</td>
+            </tr>
+            <tr>
+              <td><code>Innesto cavo</code></td>
+              <td>Di quanto il cappuccio/connettore iniziale del cavo scorre sopra l'estremità finale del PCB (calcolato in automatico all'importazione se presente una tasca con pin interni, modificabile a mano).</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="render-passes" class="card">
+        <h2>Salvataggio Render e Render Passes (EXR MultiLayer)</h2>
+        <ul>
+          <li>Ogni scena è già configurata con i principali <strong>Render Passes</strong> di Cycles abilitati (<code>Combined</code>, <code>Depth/Z</code>, <code>Normal</code>, <code>Ambient Occlusion</code>, <code>Diffuse/Glossy Direct/Indirect/Color</code>, <code>Emission</code>, <code>Shadow</code>, <code>Cryptomatte Object/Material/Asset</code>) e un nodo <code>CompositorNodeOutputFile</code> collegato al Compositor.</li>
+          <li>Premendo <strong><code>F12</code></strong> vengono salvati automaticamente nella cartella <code>renders/</code> accanto al file:
+            <ul>
+              <li>il render principale (<code>PNG</code> di default, oppure <code>OPEN_EXR_MULTILAYER</code> se cambi formato), e</li>
+              <li>il file <strong><code>&lt;scena&gt;_passes.exr</code></strong> in formato <strong>OpenEXR MultiLayer 32-bit</strong> con tutti i pass separati pronti per il compositing.</li>
+            </ul>
+          </li>
+        </ul>
+        <div class="callout ok">
+          <strong>Pannello rapido — Render Passes (EXR):</strong>
+          <ul>
+            <li><strong>Formato</strong>: selettore rapido tra <code>PNG</code> e <code>OPEN_EXR_MULTILAYER</code>.</li>
+            <li><strong>Salva F12 in EXR / Passa a PNG</strong>: commuta in un clic il formato principale di <code>F12</code> e di <em>Image &rarr; Save As</em>.</li>
+            <li><strong>Aggiorna Pass EXR</strong>: riallinea automaticamente il nodo File Output se attivi o disattivi altri pass manualmente in <em>View Layer &rarr; Passes</em>.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="best-practices" class="card">
+        <h2>Best practices per preparare gli asset senza errori</h2>
+        <p>Tutti i numeri in Blender e negli slider sono espressi in <strong>metri</strong> (<code>0.010 = 10 mm</code>).</p>
+
+        <h3 id="regole-comuni">Regole comuni a tutti i <code>.blend</code> esterni</h3>
+        <ol>
+          <li><strong>Una sola scena pulita (o gli asset nella scena principale <code>Scene</code>)</strong>
+            <ul>
+              <li>Non lasciare piani di sfondo (<code>Plane</code>, <code>Floor</code>, <code>Fondo</code>, <code>Backdrop</code>), sfere di test o oggetti di studio visibili nella scena: verrebbero importati e arrotolati insieme all'asset.</li>
+              <li>Se usi modificatori <code>Boolean</code>, tieni i cutter in una collection dedicata <strong>esclusa dal View Layer</strong> (<em>Exclude from View Layer</em>, casella spenta) oppure impostati come <code>Display As: Wire</code> e <code>Disable in Renders</code>: il <code>Boolean</code> viene valutato correttamente ma il cutter non entra nella geometria finale.</li>
+              <li>Qualunque collection spenta (<em>Exclude</em> o <em>Hide in Viewport</em>) o oggetto nascosto al render viene ignorato all'importazione.</li>
+            </ul>
+          </li>
+          <li><strong>Modificatori liberi, nessun bisogno di fare <em>Apply</em></strong>
+            <ul>
+              <li>Puoi lasciare attivi <code>Subdivision Surface</code>, <code>Bevel</code>, <code>Array</code>, <code>Solidify</code>, <code>Mirror</code>, <code>Boolean</code> e <code>Smooth by Angle</code>: all'importazione lo script valuta lo stack completo nella vista reale e consolida l'asset in una mesh unica pronta per la piegatura.</li>
+            </ul>
+          </li>
+          <li><strong>Materiali e texture</strong>
+            <ul>
+              <li>I materiali devono essere già assegnati nei file sorgente.</li>
+              <li>Se usi texture immagine esterne (<code>Image Texture</code>), <strong>impacchettale nel <code>.blend</code></strong> (<em>File &rarr; External Data &rarr; Pack Resources</em>) oppure tieni una cartella <code>textures/</code> relativa al file dell'asset, altrimenti su altri PC le superfici risulteranno magenta.</li>
+            </ul>
+          </li>
+          <li><strong>Orientamento standard degli assi</strong></li>
+        </ol>
+
+        <div class="grid-3">
+          <div class="axis-card">
+            <strong>Asse X</strong>
+            Direzione longitudinale della striscia e del cavo.
+          </div>
+          <div class="axis-card">
+            <strong>Asse Y</strong>
+            Spessore: il lato <code>-Y</code> guarda verso l'esterno della bobina, il lato <code>+Y</code> verso il mozzo.
+          </div>
+          <div class="axis-card">
+            <strong>Asse Z</strong>
+            Larghezza / altezza assiale della striscia (verticale rispetto alle flange della bobina).
+          </div>
+        </div>
+
+        <h3 id="bobine">1. Bobine (<code>bobine/*.blend</code>)</h3>
+        <ul>
+          <li>Organizza le due metà in <strong>due collection chiamate <code>up</code> e <code>down</code></strong> (anche maiuscole <code>UP</code> / <code>DOWN</code>).</li>
+          <li>Dentro <code>up</code> e <code>down</code> puoi tenere qualsiasi numero di oggetti e con qualunque nome; evita soltanto oggetti di servizio non appartenenti alla bobina (Empty, Reference o luci di prova vanno fuori o nascosti).</li>
+          <li>Origine al centro di simmetria (<code>X = 0, Y = 0</code>), asse di rotazione lungo <strong><code>Z</code></strong>.</li>
+          <li><strong>Colletti interni / nervature</strong>: lo script misura la quota di appoggio <code>Z</code> sul <strong>disco esterno della flangia</strong> (<code>R &gt; 45%</code> del raggio massimo), così eventuali colletti o battute centrali possono estendersi verso l'interno senza falsare <code>Altezza bobina</code>.</li>
+          <li><strong>Verifica rapida</strong>: imposta <code>Raggio mozzo</code> superiore al raggio esterno del colletto della bobina e <code>Raggio avvolgimento</code> inferiore al raggio esterno delle flange.</li>
+        </ul>
+
+        <h3 id="pcb">2. Strisce LED / PCB (<code>pcb/*.blend</code>)</h3>
+        <ul>
+          <li>Nessun vincolo sul nome delle collection o degli oggetti interni: puoi tenere separati guaina trasparente, adesivo, basetta PCB, fosfori, chip, resistenze e connettori.</li>
+          <li><strong>Continuità tra moduli (<code>seamless</code>)</strong>:
+            <ul>
+              <li>Le parti continue lungo tutta la lunghezza (basetta, guaina, adesivo, striscia fosfori) devono iniziare e terminare sulle <strong>stesse due coordinate <code>X</code> esterne</strong> del modulo e avere alle due estremità <code>X_min</code> e <code>X_max</code> <strong>vertici di profilo corrispondenti in <code>(Y, Z)</code></strong>, senza tappi interni tra una copia e l'altra: in fase di assemblaggio <code>Merge by Distance</code> salda automaticamente <em>solo</em> i bordi ai due capi <code>X</code> di ogni modulo.</li>
+              <li>Le parti discrete (LED, resistenze, chip) non devono sporgere oltre <code>[X_min, X_max]</code>, altrimenti creano discontinuità nel passo di ripetizione.</li>
+            </ul>
+          </li>
+          <li><strong>Suddivisione longitudinale</strong>: non è necessario suddividere manualmente in decine di tagli le parti lunghe (<code>Subdivision</code> o estrusioni semplici a 2 anelli vanno benissimo): lo script taglia automaticamente lungo <code>X</code> ogni <code>1 mm</code> tutte le isole lunghe prima di piegarle sulla spirale, preservando le isole piccole già dettagliate.</li>
+          <li><strong>Centratura e spessore</strong>: modella la sezione centrata su <code>Z = 0</code> e con il fronte luminoso rivolto verso <strong><code>-Y</code></strong>.</li>
+        </ul>
+
+        <h3 id="cavi">3. Cavi di alimentazione (<code>cavi/*.blend</code>)</h3>
+        <ul>
+          <li>Nessun vincolo sul nome della collection o degli oggetti: puoi modellare cappuccio/sovrastampaggio, contatti interni, guaina, fili spellati e puntali come oggetti separati.</li>
+          <li><strong>Verso lungo <code>X</code></strong>:
+            <ul>
+              <li>Lo standard consigliato è modellare il punto di attacco al PCB vicino a <strong><code>X = 0</code></strong> e sviluppare il cavo verso <strong><code>+X</code></strong> (con sezione in <code>Y, Z</code> e lato esterno rivolto a <code>-Y</code>).</li>
+              <li>Se un cavo è stato modellato all'inverso (attacco vicino a <code>X = 0</code> e sviluppo lungo <strong><code>-X</code></strong>), lo script rileva l'orientamento e lo ruota automaticamente di <code>180°</code> attorno a <code>Y</code> mantenendo <code>-Y</code> verso l'esterno.</li>
+            </ul>
+          </li>
+          <li><strong>Parti rigide (<code>led_role</code>)</strong>:
+            <ul>
+              <li>Per default tutte le parti del cavo seguono la curva della spirale e vengono infittite lungo <code>X</code> se necessario.</li>
+              <li>Se un connettore o un cappuccio deve restare completamente <strong>rigido</strong> senza curvarsi, aggiungi su quell'oggetto la <em>Custom Property</em> <strong><code>led_role</code></strong> con valore stringa <strong><code>connector</code></strong> (<em>Object Properties &rarr; Custom Properties &rarr; New</em>).</li>
+            </ul>
+          </li>
+          <li><strong>Innesto sopra la fine del PCB</strong>:
+            <ul>
+              <li>Se il cappuccio esterno parte davanti ai contatti/pin interni creando una tasca cava (es. cappuccio da <code>X = 0</code>, pin interni arretrati di <code>19,4 mm</code>), lo script calcola in automatico il parametro <strong><code>Innesto cavo</code></strong> facendo calzare il cappuccio sopra l'ultimo tratto di PCB. Puoi comunque rifinirlo a mano dallo slider <code>Innesto cavo</code> del modificatore.</li>
+            </ul>
+          </li>
+        </ul>
+      </section>
+
+      <section id="checklist" class="card">
+        <h2>Checklist rapida se qualcosa si rompe in viewport</h2>
+        <div class="callout warn">
+          <ul>
+            <li><strong>Vedi piani giganti o raggi che esplodono</strong>: controlla che nel <code>.blend</code> dell'asset non ci sia una seconda scena (<code>Scene.001</code>) o un oggetto <code>Plane</code> / <code>Cylinder</code> di prova rimasto visibile.</li>
+            <li><strong>Manca una modifica fatta su un file esterno</strong>: salva il <code>.blend</code> sorgente e clicca <strong>Ricarica asset</strong> nel pannello del modificatore.</li>
+            <li><strong>Le spire si compenetrano radialmente</strong>: alza <code>Passo radiale</code> almeno quanto lo spessore <code>Y</code> della striscia (e <code>Raggio mozzo</code> oltre l'eventuale colletto della bobina).</li>
+            <li><strong>Texture rosa/magenta in render</strong>: impacchetta le texture dentro il <code>.blend</code> sorgente (<em>File &rarr; External Data &rarr; Pack Resources</em>) e clicca <strong>Ricarica asset</strong>.</li>
+            <li><strong>Warning su file rinominati/spostati</strong>: esegui <code>aggiorna_nodi_led_studio.bat</code> oppure clicca <strong>Ricarica asset</strong> per ripulire eventuali riferimenti a librerie non più esistenti.</li>
+          </ul>
+        </div>
+      </section>
+
+      <footer>
+        LED Studio Starter · Documentazione sincronizzata con <code>README.md</code>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>
