@@ -297,7 +297,9 @@
         <h2>Struttura minima di lavoro</h2>
         <pre>LED_Studio_Starter/
 ├── LED_Studio.blend               # File di lavoro principale (luce, camera, set)
+├── aggiorna_da_github.bat         # Scarica script/guide da GitHub e aggiorna i nodi senza toccare set e asset
 ├── aggiorna_nodi_led_studio.bat   # Aggiorna in-place i soli nodi geometrici senza toccare il set
+├── README.md / README.html        # Guida d'uso e best practices (anche offline nel browser)
 ├── scripts/led_starter.py         # Generatore e gestore nodi/pannello
 ├── bobine/                        # Un file .blend per modello di bobina
 ├── pcb/                           # Un file .blend per modulo striscia/PCB
@@ -305,7 +307,7 @@
         <ul>
           <li>Il menu a tendina (<strong>Bobina</strong>, <strong>PCB</strong>, <strong>Cavo</strong>) eredita automaticamente il nome del file <code>.blend</code>.</li>
           <li>Puoi personalizzare liberamente camera, luci, fondale, World e impostazioni di render dentro <code>LED_Studio.blend</code>: l'importante è non rinominare il modificatore <code>Configurazione prodotto</code>, non cancellare il testo interno <code>LED Studio Libreria</code> e non lanciare lo script di generazione da zero sullo stesso file.</li>
-          <li>Per aggiornare i nodi geometrici dopo un aggiornamento di <code>scripts/led_starter.py</code>, chiudi o salva il file e avvia con doppio clic <code>aggiorna_nodi_led_studio.bat</code>.</li>
+          <li>Per aggiornare da GitHub su un altro PC <strong>senza perdere</strong> il tuo <code>LED_Studio.blend</code> personalizzato né gli asset in <code>bobine/</code>, <code>pcb/</code>, <code>cavi/</code>, fai doppio clic su <code>aggiorna_da_github.bat</code>. Se hai già aggiornato <code>scripts/led_starter.py</code> e vuoi solo ricostruire i nodi, usa <code>aggiorna_nodi_led_studio.bat</code>.</li>
         </ul>
       </section>
 

@@ -9,7 +9,9 @@ Generatore parametrico in Geometry Nodes per visualizzare e renderizzare strisce
 ```text
 LED_Studio_Starter/
 ├── LED_Studio.blend               # File di lavoro principale (luce, camera, set)
+├── aggiorna_da_github.bat         # Scarica script/guide da GitHub e aggiorna i nodi senza toccare set e asset
 ├── aggiorna_nodi_led_studio.bat   # Aggiorna in-place i soli nodi geometrici senza toccare il set
+├── README.md / README.html        # Guida d'uso e best practices (anche offline nel browser)
 ├── scripts/led_starter.py         # Generatore e gestore nodi/pannello
 ├── bobine/                        # Un file .blend per modello di bobina
 ├── pcb/                           # Un file .blend per modulo striscia/PCB
@@ -18,7 +20,7 @@ LED_Studio_Starter/
 
 - Il menu a tendina (**Bobina**, **PCB**, **Cavo**) eredita automaticamente il nome del file `.blend`.
 - Puoi personalizzare liberamente camera, luci, fondale, World e impostazioni di render dentro `LED_Studio.blend`: l'importante è non rinominare il modificatore `Configurazione prodotto`, non cancellare il testo interno `LED Studio Libreria` e non lanciare lo script di generazione da zero sullo stesso file.
-- Per aggiornare i nodi geometrici dopo un aggiornamento di `scripts/led_starter.py`, chiudi o salva il file e avvia con doppio clic `aggiorna_nodi_led_studio.bat`.
+- Per aggiornare da GitHub su un altro PC **senza perdere** il tuo `LED_Studio.blend` personalizzato né gli asset in `bobine/`, `pcb/`, `cavi/`, fai doppio clic su **`aggiorna_da_github.bat`**. Se invece hai già aggiornato `scripts/led_starter.py` e vuoi solo ricostruire i nodi, usa `aggiorna_nodi_led_studio.bat`.
 
 ---
 

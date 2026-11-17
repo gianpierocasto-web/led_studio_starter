@@ -7,6 +7,7 @@ set "SCRIPT=scripts\led_starter.py"
 set "BLENDER=E:\blender\blender.exe"
 
 if defined BLENDER_EXE if exist "%BLENDER_EXE%" set "BLENDER=%BLENDER_EXE%"
+if not exist "%BLENDER%" if exist "C:\Program Files\Blender Foundation\Blender 5.3\blender.exe" set "BLENDER=C:\Program Files\Blender Foundation\Blender 5.3\blender.exe"
 if not exist "%BLENDER%" (
     for /f "delims=" %%I in ('where blender 2^>nul') do if not exist "%BLENDER%" set "BLENDER=%%I"
 )
